@@ -13,7 +13,7 @@ jobs:
     
     steps:
     - name: 檢出代碼
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
     
     - name: 設定 Python
       uses: actions/setup-python@v4
@@ -42,7 +42,7 @@ jobs:
         echo "Windows 7 或更新版本" >> dist/使用說明.txt
     
     - name: 上傳 Windows 產物
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: Windows-版本
         path: |
@@ -55,7 +55,7 @@ jobs:
     
     steps:
     - name: 檢出代碼
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
     
     - name: 設定 Python
       uses: actions/setup-python@v4
@@ -104,7 +104,7 @@ jobs:
         EOF
     
     - name: 上傳 macOS 產物
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: macOS-版本
         path: |
@@ -117,7 +117,7 @@ jobs:
     
     steps:
     - name: 檢出代碼
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
     
     - name: 設定 Python
       uses: actions/setup-python@v4
@@ -154,7 +154,7 @@ jobs:
         EOF
     
     - name: 上傳 Linux 產物
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: Linux-版本
         path: |
@@ -169,7 +169,7 @@ jobs:
     
     steps:
     - name: 下載所有產物
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
     
     - name: 壓縮各平台檔案
       run: |
