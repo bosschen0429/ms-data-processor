@@ -1,0 +1,207 @@
+name: 自動打包所有平台版本
+
+on:
+  push:
+    tags:
+      - 'v*'  # 當推送 v1.0, v1.1 等標籤時觸發
+  workflow_dispatch:  # 允許手動觸發
+
+jobs:
+  build-windows:
+    name: 打包 Windows 版本
+    runs-on: windows-latest
+    
+    steps:
+    - name: 檢出代碼
+      uses: actions/checkout@v3
+    
+    - name: 設定 Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: 安裝依賴
+      run: |
+        python -m pip install --upgrade pip
+        pip install pandas openpyxl numpy pyinstaller
+    
+    - name: 打包 Windows 版本
+      run: |
+        pyinstaller --onefile --windowed --name="質譜數據處理工具" ms_processor.py
+    
+    - name: 創建使用說明
+      run: |
+        echo "質譜數據處理工具 v1.0 - Windows 版本" > dist/使用說明.txt
+        echo "" >> dist/使用說明.txt
+        echo "【使用方法】" >> dist/使用說明.txt
+        echo "1. 雙擊執行程式" >> dist/使用說明.txt
+        echo "2. 選擇數據檔案 (支援 Excel/CSV/TSV)" >> dist/使用說明.txt
+        echo "3. 調整參數後點擊「開始處理」" >> dist/使用說明.txt
+        echo "" >> dist/使用說明.txt
+        echo "【系統需求】" >> dist/使用說明.txt
+        echo "Windows 7 或更新版本" >> dist/使用說明.txt
+    
+    - name: 上傳 Windows 產物
+      uses: actions/upload-artifact@v3
+      with:
+        name: Windows-版本
+        path: |
+          dist/質譜數據處理工具.exe
+          dist/使用說明.txt
+
+  build-macos:
+    name: 打包 macOS 版本
+    runs-on: macos-latest
+    
+    steps:
+    - name: 檢出代碼
+      uses: actions/checkout@v3
+    
+    - name: 設定 Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: 安裝依賴
+      run: |
+        python -m pip install --upgrade pip
+        pip install pandas openpyxl numpy pyinstaller
+    
+    - name: 打包 macOS 版本
+      run: |
+        pyinstaller --onefile --windowed --name="質譜數據處理工具" ms_processor.py
+    
+    - name: 移除隔離屬性
+      run: |
+        xattr -cr dist/質譜數據處理工具 || true
+    
+    - name: 創建使用說明
+      run: |
+        cat > dist/使用說明.txt << 'EOF'
+        質譜數據處理工具 v1.0 - macOS 版本
+
+        【使用方法】
+        1. 雙擊執行程式
+        2. 選擇數據檔案 (支援 Excel/CSV/TSV)
+        3. 調整參數後點擊「開始處理」
+
+        【首次執行重要說明】
+        如果提示「無法打開，因為來自未識別的開發者」:
+
+        方法 1 (推薦):
+          1. 右鍵點擊程式
+          2. 選擇「打開」
+          3. 再次點擊「打開」確認
+
+        方法 2:
+          終端機執行: xattr -cr "質譜數據處理工具"
+
+        方法 3:
+          系統偏好設定 → 安全性與隱私 → 仍要打開
+
+        【系統需求】
+        macOS 10.13 (High Sierra) 或更新版本
+        EOF
+    
+    - name: 上傳 macOS 產物
+      uses: actions/upload-artifact@v3
+      with:
+        name: macOS-版本
+        path: |
+          dist/質譜數據處理工具
+          dist/使用說明.txt
+
+  build-linux:
+    name: 打包 Linux 版本
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 檢出代碼
+      uses: actions/checkout@v3
+    
+    - name: 設定 Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: 安裝依賴
+      run: |
+        python -m pip install --upgrade pip
+        pip install pandas openpyxl numpy pyinstaller
+    
+    - name: 打包 Linux 版本
+      run: |
+        pyinstaller --onefile --windowed --name="質譜數據處理工具" ms_processor.py
+    
+    - name: 設定執行權限
+      run: |
+        chmod +x dist/質譜數據處理工具
+    
+    - name: 創建使用說明
+      run: |
+        cat > dist/使用說明.txt << 'EOF'
+        質譜數據處理工具 v1.0 - Linux 版本
+
+        【使用方法】
+        1. 設定執行權限: chmod +x 質譜數據處理工具
+        2. 執行程式: ./質譜數據處理工具
+        3. 選擇數據檔案 (支援 Excel/CSV/TSV)
+        4. 調整參數後點擊「開始處理」
+
+        【系統需求】
+        - Ubuntu 18.04+ / Debian 10+ / Fedora 30+ 或相容發行版
+        - 需要 X11 或 Wayland 顯示伺服器
+        EOF
+    
+    - name: 上傳 Linux 產物
+      uses: actions/upload-artifact@v3
+      with:
+        name: Linux-版本
+        path: |
+          dist/質譜數據處理工具
+          dist/使用說明.txt
+
+  create-release:
+    name: 創建發布版本
+    needs: [build-windows, build-macos, build-linux]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    
+    steps:
+    - name: 下載所有產物
+      uses: actions/download-artifact@v3
+    
+    - name: 壓縮各平台檔案
+      run: |
+        cd Windows-版本
+        zip -r ../質譜數據處理工具-Windows.zip *
+        cd ../macOS-版本
+        zip -r ../質譜數據處理工具-macOS.zip *
+        cd ../Linux-版本
+        zip -r ../質譜數據處理工具-Linux.zip *
+        cd ..
+    
+    - name: 創建 Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          質譜數據處理工具-Windows.zip
+          質譜數據處理工具-macOS.zip
+          質譜數據處理工具-Linux.zip
+        body: |
+          ## 質譜數據處理工具 ${{ github.ref_name }}
+          
+          ### 功能
+          - 自動識別 RT, m/z, Intensity 欄位
+          - 去除重複訊號（基於容差）
+          - 按強度排序
+          - 支援 Excel, CSV, TSV 格式
+          
+          ### 下載說明
+          - **Windows 用戶**: 下載 `質譜數據處理工具-Windows.zip`
+          - **Mac 用戶**: 下載 `質譜數據處理工具-macOS.zip`
+          - **Linux 用戶**: 下載 `質譜數據處理工具-Linux.zip`
+          
+          解壓縮後查看「使用說明.txt」
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
