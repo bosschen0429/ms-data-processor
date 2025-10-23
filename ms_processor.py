@@ -122,10 +122,25 @@ class MSDataProcessor:
         unique_signals = []
         unique_indices = []
         
+        # 檢查是否有 ID 欄位用於過濾 NA
+        has_id_col = any('id' in str(col).lower() for col in df.columns)
+        id_col = None
+        if has_id_col:
+            for col in df.columns:
+                if 'id' in str(col).lower():
+                    id_col = col
+                    break
+        
         for idx, row in df.iterrows():
             rt = row[self.rt_col]
             mz = row[self.mz_col]
             intensity = row[self.intensity_col]
+            
+            # 檢查當前訊號的 ID 是否為 NA
+            current_is_na = False
+            if id_col is not None:
+                current_id = str(row[id_col]).strip().upper()
+                current_is_na = current_id in ['NA', 'N/A', 'NAN', '']
             
             # 檢查是否與現有訊號重複
             is_unique = True
@@ -135,6 +150,12 @@ class MSDataProcessor:
                 existing_mz = existing_row[self.mz_col]
                 existing_intensity = existing_row[self.intensity_col]
                 
+                # 檢查現有訊號的 ID 是否為 NA
+                existing_is_na = False
+                if id_col is not None:
+                    existing_id = str(existing_row[id_col]).strip().upper()
+                    existing_is_na = existing_id in ['NA', 'N/A', 'NAN', '']
+                
                 # RT 容差檢查
                 if abs(existing_rt - rt) <= self.rt_tolerance:
                     # m/z 容差檢查 (使用較大的 m/z 作為分母)
@@ -142,11 +163,23 @@ class MSDataProcessor:
                     if reference_mz > 0:
                         mz_diff_ratio = abs(existing_mz - mz) / reference_mz
                         if mz_diff_ratio <= self.mz_tolerance:
-                            # 找到重複訊號,保留強度較大的
-                            if intensity > existing_intensity:
+                            # 找到重複訊號
+                            # 優先保留非 NA 的訊號
+                            if current_is_na and not existing_is_na:
+                                # 當前是 NA,現有不是 NA → 保留現有
+                                is_unique = False
+                                break
+                            elif not current_is_na and existing_is_na:
+                                # 當前不是 NA,現有是 NA → 替換為當前
                                 unique_indices[i] = idx
-                            is_unique = False
-                            break
+                                is_unique = False
+                                break
+                            else:
+                                # 都是 NA 或都不是 NA → 比較強度
+                                if intensity > existing_intensity:
+                                    unique_indices[i] = idx
+                                is_unique = False
+                                break
             
             if is_unique:
                 unique_indices.append(idx)
