@@ -5,6 +5,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import sys
 import os
+from datetime import datetime
 
 class MSDataProcessor:
     """Mass Spectrometry Data Processor"""
@@ -559,9 +560,11 @@ class MSProcessorGUI:
             self.update_status(f"  Intensity: {processor.intensity_col}")
             self.update_status(f"Other columns preserved: {len(processor.all_columns) - 3}")
             
-            # Generate output filename in output directory
+            # Generate output filename with timestamp
             input_path = Path(self.input_file)
-            output_path = self.output_dir / f"{input_path.stem}_processed{input_path.suffix}"
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_filename = f"processed_{input_path.stem}_{timestamp}{input_path.suffix}"
+            output_path = self.output_dir / output_filename
             
             # Save results
             self.update_status("\nSaving results...")
