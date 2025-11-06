@@ -74,7 +74,7 @@ jobs:
     - name: 上傳 Windows 產物
       uses: actions/upload-artifact@v4
       with:
-        name: Windows-版本
+        name: Replicates_eliminating_tool_Win_${{ steps.get_version.outputs.version }}
         path: Replicates_eliminating_tool_Win_${{ steps.get_version.outputs.version }}
 
   build-macos:
@@ -157,82 +157,12 @@ jobs:
     - name: 上傳 macOS 產物
       uses: actions/upload-artifact@v4
       with:
-        name: macOS-版本
+        name: Replicates_eliminating_tool_macOS_${{ steps.get_version.outputs.version }}
         path: Replicates_eliminating_tool_macOS_${{ steps.get_version.outputs.version }}
-
-  build-linux:
-    name: 打包 Linux 版本
-    runs-on: ubuntu-latest
-    
-    steps:
-    - name: 檢出代碼
-      uses: actions/checkout@v4
-    
-    - name: 設定 Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.11'
-    
-    - name: 安裝依賴
-      run: |
-        python -m pip install --upgrade pip
-        pip install pandas openpyxl numpy pyinstaller
-    
-    - name: 獲取版本號
-      id: get_version
-      run: |
-        if [[ "${{ github.ref }}" == refs/tags/* ]]; then
-          version="${{ github.ref }}"
-          version="${version#refs/tags/}"
-        else
-          version="dev"
-        fi
-        echo "version=$version" >> $GITHUB_OUTPUT
-    
-    - name: 打包 Linux 版本
-      run: |
-        pyinstaller --onefile --windowed --name="Replicates_eliminating_tool_${{ steps.get_version.outputs.version }}" ms_processor.py
-    
-    - name: 創建資料夾結構
-      run: |
-        version="${{ steps.get_version.outputs.version }}"
-        folderName="Replicates_eliminating_tool_Linux_$version"
-        mkdir -p "$folderName/output"
-        mv "dist/Replicates_eliminating_tool_$version" "$folderName/"
-        chmod +x "$folderName/Replicates_eliminating_tool_$version"
-    
-    - name: 創建使用說明
-      run: |
-        version="${{ steps.get_version.outputs.version }}"
-        folderName="Replicates_eliminating_tool_Linux_$version"
-        cat > "$folderName/README.txt" << EOF
-        MS Data Replicates Eliminating Tool $version - Linux Version
-
-        【How to Use】
-        1. Set execute permission: chmod +x Replicates_eliminating_tool_$version
-        2. Run program: ./Replicates_eliminating_tool_$version
-        3. Select data file (supports Excel/CSV/TSV)
-        4. Adjust parameters and click "Start Processing"
-        5. Processed files will be saved in the "output" folder
-
-        【System Requirements】
-        - Ubuntu 18.04+ / Debian 10+ / Fedora 30+ or compatible distributions
-        - Requires X11 or Wayland display server
-
-        【Notes】
-        - Output files will be automatically saved in the "output" folder
-        - The output folder is in the same directory as the executable
-        EOF
-    
-    - name: 上傳 Linux 產物
-      uses: actions/upload-artifact@v4
-      with:
-        name: Linux-版本
-        path: Replicates_eliminating_tool_Linux_${{ steps.get_version.outputs.version }}
 
   create-release:
     name: 創建發布版本
-    needs: [build-windows, build-macos, build-linux]
+    needs: [build-windows, build-macos]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     
@@ -250,12 +180,10 @@ jobs:
     - name: 壓縮各平台檔案
       run: |
         version="${{ steps.get_version.outputs.version }}"
-        cd Windows-版本
-        zip -r "../Replicates_eliminating_tool_Win_$version.zip" "Replicates_eliminating_tool_Win_$version"
-        cd ../macOS-版本
-        zip -r "../Replicates_eliminating_tool_macOS_$version.zip" "Replicates_eliminating_tool_macOS_$version"
-        cd ../Linux-版本
-        zip -r "../Replicates_eliminating_tool_Linux_$version.zip" "Replicates_eliminating_tool_Linux_$version"
+        cd "Replicates_eliminating_tool_Win_$version"
+        zip -r "../Replicates_eliminating_tool_Win_$version.zip" .
+        cd "../Replicates_eliminating_tool_macOS_$version"
+        zip -r "../Replicates_eliminating_tool_macOS_$version.zip" .
         cd ..
     
     - name: 創建 Release
@@ -264,7 +192,6 @@ jobs:
         files: |
           Replicates_eliminating_tool_Win_${{ steps.get_version.outputs.version }}.zip
           Replicates_eliminating_tool_macOS_${{ steps.get_version.outputs.version }}.zip
-          Replicates_eliminating_tool_Linux_${{ steps.get_version.outputs.version }}.zip
         body: |
           ## MS Data Replicates Eliminating Tool ${{ steps.get_version.outputs.version }}
           
@@ -278,7 +205,6 @@ jobs:
           ### Download Instructions
           - **Windows Users**: Download `Replicates_eliminating_tool_Win_${{ steps.get_version.outputs.version }}.zip`
           - **Mac Users**: Download `Replicates_eliminating_tool_macOS_${{ steps.get_version.outputs.version }}.zip`
-          - **Linux Users**: Download `Replicates_eliminating_tool_Linux_${{ steps.get_version.outputs.version }}.zip`
           
           Extract and read "README.txt" for instructions
       env:
