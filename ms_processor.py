@@ -3,41 +3,43 @@ import numpy as np
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+import sys
+import os
 
 class MSDataProcessor:
-    """質譜數據處理類別"""
+    """Mass Spectrometry Data Processor"""
     
     def __init__(self, mz_tolerance_ppm=20, rt_tolerance=1):
         """
-        初始化處理器
+        Initialize processor
         
         Parameters:
         -----------
         mz_tolerance_ppm : float
-            m/z 容差值 (ppm)
+            m/z tolerance (ppm)
         rt_tolerance : float
-            RT 容差值
+            RT tolerance
         """
         self.mz_tolerance = mz_tolerance_ppm / 1_000_000
         self.rt_tolerance = rt_tolerance
         
     def load_data(self, file_path):
         """
-        載入數據並自動識別欄位 (支援 Excel, CSV, TSV)
+        Load data and automatically identify columns (supports Excel, CSV, TSV)
         
         Parameters:
         -----------
         file_path : str
-            檔案路徑
+            File path
             
         Returns:
         --------
         pd.DataFrame
-            包含所有欄位的數據框
+            DataFrame with all columns
         """
         file_path = str(file_path)
         
-        # 根據副檔名選擇讀取方式
+        # Read file based on extension
         if file_path.endswith('.csv'):
             df = pd.read_csv(file_path)
         elif file_path.endswith('.tsv') or file_path.endswith('.txt'):
@@ -45,58 +47,77 @@ class MSDataProcessor:
         elif file_path.endswith(('.xlsx', '.xls')):
             df = pd.read_excel(file_path)
         else:
-            raise ValueError(f"不支援的檔案格式。支援: .xlsx, .xls, .csv, .tsv, .txt")
+            raise ValueError(f"Unsupported file format. Supported: .xlsx, .xls, .csv, .tsv, .txt")
         
-        # 自動識別 RT, m/z, Intensity 欄位
-        rt_col = self._find_column(df.columns, [
+        # Identify MZmine columns (priority)
+        mzmine_rt_col = self._find_column(df.columns, ['mzmine rt', 'mzmine rt (min)'])
+        mzmine_mz_col = self._find_column(df.columns, ['mzmine m/z', 'mzmine mz'])
+        mzmine_area_col = self._find_column(df.columns, ['peak area', 'area'])
+        mzmine_id_col = self._find_column(df.columns, ['mzmine id'])
+        
+        # Identify FeatureHunter columns (fallback)
+        fh_rt_col = self._find_column(df.columns, [
             'rt', 'retention time', 'retention_time', 'retentiontime',
             'rt (min)', 'rt(min)', 'retention time (min)'
         ])
-        mz_col = self._find_column(df.columns, [
-            'm/z', 'mz', 'm_z', 'mass', 
-            'precursor ion m/z', 'precursor m/z', 'precursormz'
+        fh_mz_col = self._find_column(df.columns, [
+            'precursor ion m/z', 'precursor m/z', 'precursormz',
+            'm/z', 'mz', 'm_z', 'mass'
         ])
-        intensity_col = self._find_column(df.columns, [
-            'intensity', 'int', 'abundance', 'height',
-            'precursor ion intensity', 'precursor intensity', 'precursorintensity'
+        fh_intensity_col = self._find_column(df.columns, [
+            'precursor ion intensity', 'precursor intensity', 'precursorintensity',
+            'intensity', 'int', 'abundance', 'height'
         ])
         
-        if not rt_col or not mz_col or not intensity_col:
-            missing = []
-            if not rt_col: missing.append("RT")
-            if not mz_col: missing.append("m/z")
-            if not intensity_col: missing.append("Intensity")
+        # Filter out rows where MZmine data is NA
+        if mzmine_id_col and mzmine_rt_col and mzmine_mz_col and mzmine_area_col:
+            # Remove rows where any MZmine column is NA
+            df = df[
+                df[mzmine_id_col].notna() & 
+                (df[mzmine_id_col].astype(str).str.strip().str.upper() != 'NA') &
+                df[mzmine_rt_col].notna() & 
+                df[mzmine_mz_col].notna() & 
+                df[mzmine_area_col].notna()
+            ]
             
-            available_cols = "\n可用的欄位: " + ", ".join(df.columns.tolist())
-            raise ValueError(f"無法識別欄位: {', '.join(missing)}\n請確認標頭包含這些欄位名稱{available_cols}")
+            # Use MZmine columns
+            self.rt_col = mzmine_rt_col
+            self.mz_col = mzmine_mz_col
+            self.intensity_col = mzmine_area_col
+            self.data_source = "MZmine"
+        elif fh_rt_col and fh_mz_col and fh_intensity_col:
+            # Fallback to FeatureHunter columns
+            self.rt_col = fh_rt_col
+            self.mz_col = fh_mz_col
+            self.intensity_col = fh_intensity_col
+            self.data_source = "FeatureHunter"
+        else:
+            available_cols = "\nAvailable columns: " + ", ".join(df.columns.tolist())
+            raise ValueError(f"Cannot identify required columns.\nPlease check your file headers.{available_cols}")
         
-        # 標記主要欄位
-        self.rt_col = rt_col
-        self.mz_col = mz_col
-        self.intensity_col = intensity_col
         self.all_columns = list(df.columns)
         
-        # 移除無效數據 (只檢查 m/z 和 intensity > 0, RT 允許為 0)
-        df = df[(df[mz_col] > 0) & (df[intensity_col] > 0)]
-        df = df.dropna(subset=[rt_col, mz_col, intensity_col])
+        # Remove invalid data (m/z and intensity > 0)
+        df = df[(df[self.mz_col] > 0) & (df[self.intensity_col] > 0)]
+        df = df.dropna(subset=[self.rt_col, self.mz_col, self.intensity_col])
         
         return df.reset_index(drop=True)
     
     def _find_column(self, columns, possible_names):
         """
-        尋找符合的欄位名稱
+        Find matching column name
         
         Parameters:
         -----------
         columns : list
-            所有欄位名稱
+            All column names
         possible_names : list
-            可能的欄位名稱列表
+            List of possible column names
             
         Returns:
         --------
         str or None
-            找到的欄位名稱
+            Found column name
         """
         for col in columns:
             col_lower = str(col).lower().strip()
@@ -107,42 +128,27 @@ class MSDataProcessor:
     
     def find_unique_signals(self, df):
         """
-        找出唯一訊號 (去除重複),保留所有其他欄位
+        Find unique signals (remove duplicates), keep all other columns
         
         Parameters:
         -----------
         df : pd.DataFrame
-            原始數據
+            Original data
             
         Returns:
         --------
         pd.DataFrame
-            去重複後的數據
+            De-duplicated data
         """
         unique_signals = []
         unique_indices = []
-        
-        # 檢查是否有 ID 欄位用於過濾 NA
-        has_id_col = any('id' in str(col).lower() for col in df.columns)
-        id_col = None
-        if has_id_col:
-            for col in df.columns:
-                if 'id' in str(col).lower():
-                    id_col = col
-                    break
         
         for idx, row in df.iterrows():
             rt = row[self.rt_col]
             mz = row[self.mz_col]
             intensity = row[self.intensity_col]
             
-            # 檢查當前訊號的 ID 是否為 NA
-            current_is_na = False
-            if id_col is not None:
-                current_id = str(row[id_col]).strip().upper()
-                current_is_na = current_id in ['NA', 'N/A', 'NAN', '']
-            
-            # 檢查是否與現有訊號重複
+            # Check for duplicates
             is_unique = True
             for i, existing_idx in enumerate(unique_indices):
                 existing_row = df.loc[existing_idx]
@@ -150,36 +156,18 @@ class MSDataProcessor:
                 existing_mz = existing_row[self.mz_col]
                 existing_intensity = existing_row[self.intensity_col]
                 
-                # 檢查現有訊號的 ID 是否為 NA
-                existing_is_na = False
-                if id_col is not None:
-                    existing_id = str(existing_row[id_col]).strip().upper()
-                    existing_is_na = existing_id in ['NA', 'N/A', 'NAN', '']
-                
-                # RT 容差檢查
+                # RT tolerance check
                 if abs(existing_rt - rt) <= self.rt_tolerance:
-                    # m/z 容差檢查 (使用較大的 m/z 作為分母)
+                    # m/z tolerance check (use larger m/z as denominator)
                     reference_mz = max(existing_mz, mz)
                     if reference_mz > 0:
                         mz_diff_ratio = abs(existing_mz - mz) / reference_mz
                         if mz_diff_ratio <= self.mz_tolerance:
-                            # 找到重複訊號
-                            # 優先保留非 NA 的訊號
-                            if current_is_na and not existing_is_na:
-                                # 當前是 NA,現有不是 NA → 保留現有
-                                is_unique = False
-                                break
-                            elif not current_is_na and existing_is_na:
-                                # 當前不是 NA,現有是 NA → 替換為當前
+                            # Found duplicate, keep higher intensity
+                            if intensity > existing_intensity:
                                 unique_indices[i] = idx
-                                is_unique = False
-                                break
-                            else:
-                                # 都是 NA 或都不是 NA → 比較強度
-                                if intensity > existing_intensity:
-                                    unique_indices[i] = idx
-                                is_unique = False
-                                break
+                            is_unique = False
+                            break
             
             if is_unique:
                 unique_indices.append(idx)
@@ -188,56 +176,57 @@ class MSDataProcessor:
     
     def process(self, file_path, top_n=None):
         """
-        完整處理流程
+        Complete processing workflow
         
         Parameters:
         -----------
         file_path : str
-            輸入檔案路徑
+            Input file path
         top_n : int, optional
-            輸出前 N 個訊號,None 表示全部輸出
+            Output top N signals, None means output all
             
         Returns:
         --------
         tuple
-            (處理後的數據框, 統計資訊字典)
+            (processed DataFrame, statistics dictionary)
         """
-        # 載入數據
+        # Load data
         df_original = self.load_data(file_path)
         original_count = len(df_original)
         
-        # 去除重複
+        # Remove duplicates
         df_unique = self.find_unique_signals(df_original)
         unique_count = len(df_unique)
         
-        # 按強度排序
+        # Sort by intensity
         df_sorted = df_unique.sort_values(self.intensity_col, ascending=False).reset_index(drop=True)
         
-        # 取前 N 個
+        # Take top N
         if top_n and top_n > 0:
             df_result = df_sorted.head(top_n)
         else:
             df_result = df_sorted
         
-        # 統計資訊
+        # Statistics
         stats = {
             'original_count': original_count,
             'unique_count': unique_count,
-            'output_count': len(df_result)
+            'output_count': len(df_result),
+            'data_source': self.data_source
         }
         
         return df_result, stats
     
     def save_results(self, df, output_path):
         """
-        儲存結果 (支援 Excel, CSV, TSV)
+        Save results (supports Excel, CSV, TSV)
         
         Parameters:
         -----------
         df : pd.DataFrame
-            要儲存的數據
+            Data to save
         output_path : str
-            輸出檔案路徑
+            Output file path
         """
         output_path = str(output_path)
         
@@ -249,97 +238,269 @@ class MSDataProcessor:
             with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
                 df.to_excel(writer, sheet_name='Top Results', index=False)
                 
-                # 格式化 Intensity 欄位為科學記號
+                # Format intensity column as scientific notation
                 workbook = writer.book
                 worksheet = writer.sheets['Top Results']
                 
-                # 找到 Intensity 欄位的位置
+                # Find intensity column position
                 intensity_col_idx = list(df.columns).index(self.intensity_col) + 1
                 
                 for row in range(2, len(df) + 2):
                     cell = worksheet.cell(row=row, column=intensity_col_idx)
                     cell.number_format = '0.00E+00'
         else:
-            raise ValueError(f"不支援的輸出格式。支援: .xlsx, .xls, .csv, .tsv, .txt")
+            raise ValueError(f"Unsupported output format. Supported: .xlsx, .xls, .csv, .tsv, .txt")
 
 
 class MSProcessorGUI:
-    """圖形化介面"""
+    """Graphical User Interface with flat design"""
+    
+    # Color scheme - high contrast flat design
+    COLORS = {
+        'bg': '#F5F5F5',           # Light gray background
+        'card': '#FFFFFF',          # White cards
+        'primary': '#2196F3',       # Blue primary
+        'primary_dark': '#1976D2',  # Darker blue
+        'success': '#4CAF50',       # Green
+        'success_dark': '#388E3C',  # Darker green
+        'text': '#212121',          # Dark text
+        'text_secondary': '#757575', # Gray text
+        'border': '#E0E0E0',        # Light border
+        'shadow': '#00000010'       # Subtle shadow
+    }
     
     def __init__(self, root):
         self.root = root
-        self.root.title("質譜數據去重複處理工具")
-        self.root.geometry("600x450")
+        self.root.title("MS Data Deduplication Tool")
+        self.root.geometry("700x550")
+        self.root.configure(bg=self.COLORS['bg'])
+        
+        # Make window non-resizable for consistent layout
+        self.root.resizable(False, False)
         
         self.processor = None
         self.input_file = None
+        self.param_entries = []  # Initialize before create_widgets
+        
+        # Get the directory where the executable is located
+        if getattr(sys, 'frozen', False):
+            # Running as compiled executable
+            self.base_dir = Path(sys.executable).parent
+        else:
+            # Running as script
+            self.base_dir = Path(__file__).parent
+        
+        # Create output directory
+        self.output_dir = self.base_dir / "output"
+        self.output_dir.mkdir(exist_ok=True)
         
         self.create_widgets()
     
-    def create_widgets(self):
-        # 標題
-        title_label = tk.Label(
-            self.root, 
-            text="質譜數據去重複處理工具",
-            font=("Arial", 16, "bold")
+    def create_card(self, parent, **kwargs):
+        """Create a card-style frame"""
+        frame = tk.Frame(
+            parent,
+            bg=self.COLORS['card'],
+            highlightbackground=self.COLORS['border'],
+            highlightthickness=1,
+            **kwargs
         )
-        title_label.pack(pady=10)
+        return frame
+    
+    def create_widgets(self):
+        # Main container with padding
+        main_container = tk.Frame(self.root, bg=self.COLORS['bg'])
+        main_container.pack(fill="both", expand=True, padx=20, pady=20)
         
-        # 檔案選擇框架
-        file_frame = tk.LabelFrame(self.root, text="檔案選擇", padx=10, pady=10)
-        file_frame.pack(padx=20, pady=10, fill="x")
+        # Title section
+        title_frame = tk.Frame(main_container, bg=self.COLORS['bg'])
+        title_frame.pack(fill="x", pady=(0, 20))
         
-        self.file_label = tk.Label(file_frame, text="未選擇檔案", fg="gray")
-        self.file_label.pack(side="left", padx=5)
+        title_label = tk.Label(
+            title_frame,
+            text="MS Data Deduplication Tool",
+            font=("Segoe UI", 24, "bold"),
+            bg=self.COLORS['bg'],
+            fg=self.COLORS['text']
+        )
+        title_label.pack()
         
-        tk.Button(
-            file_frame, 
-            text="選擇檔案 (Excel/CSV/TSV)", 
-            command=self.select_file
-        ).pack(side="right", padx=5)
+        subtitle_label = tk.Label(
+            title_frame,
+            text="Remove duplicate signals and export top results",
+            font=("Segoe UI", 10),
+            bg=self.COLORS['bg'],
+            fg=self.COLORS['text_secondary']
+        )
+        subtitle_label.pack()
         
-        # 參數設定框架
-        param_frame = tk.LabelFrame(self.root, text="參數設定", padx=10, pady=10)
-        param_frame.pack(padx=20, pady=10, fill="x")
+        # File selection card
+        file_card = self.create_card(main_container)
+        file_card.pack(fill="x", pady=(0, 15))
         
-        # m/z 容差
-        tk.Label(param_frame, text="m/z 容差 (ppm):").grid(row=0, column=0, sticky="w", pady=5)
-        self.mz_tolerance_var = tk.StringVar(value="20")
-        tk.Entry(param_frame, textvariable=self.mz_tolerance_var, width=15).grid(row=0, column=1, pady=5)
+        file_inner = tk.Frame(file_card, bg=self.COLORS['card'])
+        file_inner.pack(fill="x", padx=20, pady=15)
         
-        # RT 容差
-        tk.Label(param_frame, text="RT 容差:").grid(row=1, column=0, sticky="w", pady=5)
-        self.rt_tolerance_var = tk.StringVar(value="1")
-        tk.Entry(param_frame, textvariable=self.rt_tolerance_var, width=15).grid(row=1, column=1, pady=5)
+        tk.Label(
+            file_inner,
+            text="1. Select Input File",
+            font=("Segoe UI", 11, "bold"),
+            bg=self.COLORS['card'],
+            fg=self.COLORS['text']
+        ).pack(anchor="w", pady=(0, 10))
         
-        # 輸出數量
-        tk.Label(param_frame, text="輸出前 N 個訊號:").grid(row=2, column=0, sticky="w", pady=5)
-        self.top_n_var = tk.StringVar(value="10")
-        tk.Entry(param_frame, textvariable=self.top_n_var, width=15).grid(row=2, column=1, pady=5)
-        tk.Label(param_frame, text="(輸入 0 表示全部)", fg="gray").grid(row=2, column=2, sticky="w", padx=5)
+        file_row = tk.Frame(file_inner, bg=self.COLORS['card'])
+        file_row.pack(fill="x")
         
-        # 執行按鈕
-        tk.Button(
-            self.root, 
-            text="開始處理", 
-            command=self.process_data,
-            bg="#4CAF50",
+        self.file_label = tk.Label(
+            file_row,
+            text="No file selected",
+            font=("Segoe UI", 9),
+            bg=self.COLORS['card'],
+            fg=self.COLORS['text_secondary'],
+            anchor="w"
+        )
+        self.file_label.pack(side="left", fill="x", expand=True)
+        
+        select_btn = tk.Button(
+            file_row,
+            text="Browse Files",
+            command=self.select_file,
+            bg=self.COLORS['primary'],
             fg="white",
-            font=("Arial", 12, "bold"),
+            font=("Segoe UI", 10, "bold"),
+            relief="flat",
+            cursor="hand2",
             padx=20,
-            pady=10
-        ).pack(pady=20)
+            pady=8
+        )
+        select_btn.pack(side="right")
+        select_btn.bind("<Enter>", lambda e: select_btn.config(bg=self.COLORS['primary_dark']))
+        select_btn.bind("<Leave>", lambda e: select_btn.config(bg=self.COLORS['primary']))
         
-        # 狀態顯示
-        self.status_text = tk.Text(self.root, height=8, width=70, state="disabled")
-        self.status_text.pack(padx=20, pady=10)
+        # Parameters card
+        param_card = self.create_card(main_container)
+        param_card.pack(fill="x", pady=(0, 15))
+        
+        param_inner = tk.Frame(param_card, bg=self.COLORS['card'])
+        param_inner.pack(fill="x", padx=20, pady=15)
+        
+        tk.Label(
+            param_inner,
+            text="2. Configure Parameters",
+            font=("Segoe UI", 11, "bold"),
+            bg=self.COLORS['card'],
+            fg=self.COLORS['text']
+        ).pack(anchor="w", pady=(0, 15))
+        
+        # Parameter grid
+        param_grid = tk.Frame(param_inner, bg=self.COLORS['card'])
+        param_grid.pack(fill="x")
+        
+        # m/z tolerance
+        self.mz_tolerance_var = self._create_param_row(param_grid, "m/z Tolerance (ppm):", "20", 
+                               "Acceptable mass difference")
+        
+        # RT tolerance
+        self.rt_tolerance_var = self._create_param_row(param_grid, "RT Tolerance:", "1", 
+                               "Acceptable retention time difference")
+        
+        # Top N
+        self.top_n_var = self._create_param_row(param_grid, "Output Top N Signals:", "10", 
+                               "Enter 0 for all signals")
+        
+        # Process button
+        process_btn = tk.Button(
+            main_container,
+            text="Start Processing",
+            command=self.process_data,
+            bg=self.COLORS['success'],
+            fg="white",
+            font=("Segoe UI", 12, "bold"),
+            relief="flat",
+            cursor="hand2",
+            padx=30,
+            pady=15
+        )
+        process_btn.pack(pady=(0, 15))
+        process_btn.bind("<Enter>", lambda e: process_btn.config(bg=self.COLORS['success_dark']))
+        process_btn.bind("<Leave>", lambda e: process_btn.config(bg=self.COLORS['success']))
+        
+        # Status card
+        status_card = self.create_card(main_container)
+        status_card.pack(fill="both", expand=True)
+        
+        status_inner = tk.Frame(status_card, bg=self.COLORS['card'])
+        status_inner.pack(fill="both", expand=True, padx=20, pady=15)
+        
+        tk.Label(
+            status_inner,
+            text="Processing Status",
+            font=("Segoe UI", 11, "bold"),
+            bg=self.COLORS['card'],
+            fg=self.COLORS['text']
+        ).pack(anchor="w", pady=(0, 10))
+        
+        self.status_text = tk.Text(
+            status_inner,
+            height=8,
+            font=("Consolas", 9),
+            bg="#FAFAFA",
+            fg=self.COLORS['text'],
+            relief="flat",
+            borderwidth=0,
+            state="disabled"
+        )
+        self.status_text.pack(fill="both", expand=True)
+    
+    def _create_param_row(self, parent, label_text, default_value, hint_text):
+        """Create a parameter input row"""
+        row_frame = tk.Frame(parent, bg=self.COLORS['card'])
+        row_frame.pack(fill="x", pady=8)
+        
+        # Left side: Label
+        tk.Label(
+            row_frame,
+            text=label_text,
+            font=("Segoe UI", 10, "bold"),
+            bg=self.COLORS['card'],
+            fg=self.COLORS['text'],
+            anchor="w",
+            width=20
+        ).pack(side="left")
+        
+        # Middle: Entry
+        entry_var = tk.StringVar(value=default_value)
+        entry = tk.Entry(
+            row_frame,
+            textvariable=entry_var,
+            font=("Segoe UI", 10),
+            bg="white",
+            fg=self.COLORS['text'],
+            relief="solid",
+            borderwidth=1,
+            width=12
+        )
+        entry.pack(side="left", padx=(0, 15))
+        
+        # Right side: Hint text
+        tk.Label(
+            row_frame,
+            text=hint_text,
+            font=("Segoe UI", 9),
+            bg=self.COLORS['card'],
+            fg=self.COLORS['text_secondary'],
+            anchor="w"
+        ).pack(side="left", fill="x", expand=True)
+        
+        return entry_var  # Return the StringVar directly
     
     def select_file(self):
-        """選擇輸入檔案"""
+        """Select input file"""
         file_path = filedialog.askopenfilename(
-            title="選擇資料檔案",
+            title="Select Data File",
             filetypes=[
-                ("所有支援格式", "*.xlsx *.xls *.csv *.tsv *.txt"),
+                ("All Supported Formats", "*.xlsx *.xls *.csv *.tsv *.txt"),
                 ("Excel files", "*.xlsx *.xls"),
                 ("CSV files", "*.csv"),
                 ("TSV files", "*.tsv *.txt"),
@@ -349,10 +510,13 @@ class MSProcessorGUI:
         
         if file_path:
             self.input_file = file_path
-            self.file_label.config(text=Path(file_path).name, fg="black")
+            self.file_label.config(
+                text=Path(file_path).name,
+                fg=self.COLORS['text']
+            )
     
     def update_status(self, message):
-        """更新狀態顯示"""
+        """Update status display"""
         self.status_text.config(state="normal")
         self.status_text.insert("end", message + "\n")
         self.status_text.see("end")
@@ -360,64 +524,66 @@ class MSProcessorGUI:
         self.root.update()
     
     def process_data(self):
-        """處理數據"""
+        """Process data"""
         if not self.input_file:
-            messagebox.showerror("錯誤", "請先選擇輸入檔案!")
+            messagebox.showerror("Error", "Please select an input file first!")
             return
         
         try:
-            # 清空狀態
+            # Clear status
             self.status_text.config(state="normal")
             self.status_text.delete(1.0, "end")
             self.status_text.config(state="disabled")
             
-            # 讀取參數
+            # Read parameters
             mz_tol = float(self.mz_tolerance_var.get())
             rt_tol = float(self.rt_tolerance_var.get())
             top_n = int(self.top_n_var.get())
             if top_n == 0:
                 top_n = None
             
-            self.update_status("開始處理...")
+            self.update_status("Starting processing...")
             
-            # 建立處理器
+            # Create processor
             processor = MSDataProcessor(mz_tolerance_ppm=mz_tol, rt_tolerance=rt_tol)
             
-            # 處理數據
-            self.update_status("讀取數據中...")
+            # Process data
+            self.update_status("Loading data...")
             df_result, stats = processor.process(self.input_file, top_n)
             
-            # 顯示識別的欄位
-            self.update_status(f"已識別欄位:")
+            # Display identified columns
+            self.update_status(f"\nData Source: {stats['data_source']}")
+            self.update_status(f"Identified Columns:")
             self.update_status(f"  RT: {processor.rt_col}")
             self.update_status(f"  m/z: {processor.mz_col}")
             self.update_status(f"  Intensity: {processor.intensity_col}")
-            self.update_status(f"保留的其他欄位: {len(processor.all_columns) - 3} 個")
+            self.update_status(f"Other columns preserved: {len(processor.all_columns) - 3}")
             
-            # 生成輸出檔名 (保持相同格式)
+            # Generate output filename in output directory
             input_path = Path(self.input_file)
-            output_path = input_path.parent / f"{input_path.stem}_processed{input_path.suffix}"
+            output_path = self.output_dir / f"{input_path.stem}_processed{input_path.suffix}"
             
-            # 儲存結果
-            self.update_status("儲存結果中...")
+            # Save results
+            self.update_status("\nSaving results...")
             processor.save_results(df_result, str(output_path))
             
-            # 顯示統計
-            self.update_status("\n處理完成!")
-            self.update_status(f"原始數據: {stats['original_count']} 筆")
-            self.update_status(f"去重複後: {stats['unique_count']} 筆")
-            self.update_status(f"輸出數量: {stats['output_count']} 筆")
-            self.update_status(f"\n結果已儲存至:\n{output_path}")
+            # Display statistics
+            self.update_status("\n" + "="*50)
+            self.update_status("Processing Complete!")
+            self.update_status(f"Original data: {stats['original_count']} signals")
+            self.update_status(f"After deduplication: {stats['unique_count']} signals")
+            self.update_status(f"Output count: {stats['output_count']} signals")
+            self.update_status(f"\nResults saved to:\n{output_path}")
             
-            messagebox.showinfo("完成", f"處理完成!\n\n結果已儲存至:\n{output_path}")
+            messagebox.showinfo("Success", f"Processing complete!\n\nResults saved to:\n{output_path}")
             
         except Exception as e:
-            messagebox.showerror("錯誤", f"處理時發生錯誤:\n{str(e)}")
-            self.update_status(f"\n錯誤: {str(e)}")
+            messagebox.showerror("Error", f"An error occurred during processing:\n{str(e)}")
+            self.update_status(f"\nError: {str(e)}")
 
 
 def main():
-    """主程式"""
+    """Main program"""
     root = tk.Tk()
     app = MSProcessorGUI(root)
     root.mainloop()

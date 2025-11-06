@@ -3,7 +3,7 @@ name: 自動打包所有平台版本
 on:
   push:
     tags:
-      - 'v*'  # 當推送 v1.0, v1.1 等標籤時觸發
+      - 'v*'  
   workflow_dispatch:  # 允許手動觸發
 
 jobs:
@@ -25,29 +25,57 @@ jobs:
         python -m pip install --upgrade pip
         pip install pandas openpyxl numpy pyinstaller
     
+    - name: 獲取版本號
+      id: get_version
+      run: |
+        if ("${{ github.ref }}" -like "refs/tags/*") {
+          $version = "${{ github.ref }}" -replace 'refs/tags/', ''
+        } else {
+          $version = "dev"
+        }
+        echo "version=$version" >> $env:GITHUB_OUTPUT
+      shell: pwsh
+    
     - name: 打包 Windows 版本
       run: |
-        pyinstaller --onefile --windowed --name="質譜數據處理工具" ms_processor.py
+        pyinstaller --onefile --windowed --name="Replicates_eliminating_tool_${{ steps.get_version.outputs.version }}" ms_processor.py
+    
+    - name: 創建資料夾結構
+      run: |
+        $version = "${{ steps.get_version.outputs.version }}"
+        $folderName = "Replicates_eliminating_tool_Win_$version"
+        New-Item -ItemType Directory -Path $folderName
+        New-Item -ItemType Directory -Path "$folderName\output"
+        Move-Item "dist\Replicates_eliminating_tool_$version.exe" "$folderName\"
+      shell: pwsh
     
     - name: 創建使用說明
       run: |
-        echo "質譜數據處理工具 v1.0 - Windows 版本" > dist/使用說明.txt
-        echo "" >> dist/使用說明.txt
-        echo "【使用方法】" >> dist/使用說明.txt
-        echo "1. 雙擊執行程式" >> dist/使用說明.txt
-        echo "2. 選擇數據檔案 (支援 Excel/CSV/TSV)" >> dist/使用說明.txt
-        echo "3. 調整參數後點擊「開始處理」" >> dist/使用說明.txt
-        echo "" >> dist/使用說明.txt
-        echo "【系統需求】" >> dist/使用說明.txt
-        echo "Windows 7 或更新版本" >> dist/使用說明.txt
+        $version = "${{ steps.get_version.outputs.version }}"
+        $folderName = "Replicates_eliminating_tool_Win_$version"
+        @"
+        MS Data Replicates Eliminating Tool $version - Windows Version
+
+        【How to Use】
+        1. Double-click to run the program
+        2. Select data file (supports Excel/CSV/TSV)
+        3. Adjust parameters and click "Start Processing"
+        4. Processed files will be saved in the "output" folder
+
+        【System Requirements】
+        Windows 7 or newer
+
+        【Notes】
+        - Output files will be automatically saved in the "output" folder
+        - The output folder is in the same directory as the executable
+        "@ | Out-File -FilePath "$folderName\README.txt" -Encoding UTF8
+      shell: pwsh
     
     - name: 上傳 Windows 產物
       uses: actions/upload-artifact@v4
       with:
         name: Windows-版本
-        path: |
-          dist/質譜數據處理工具.exe
-          dist/使用說明.txt
+        path: Replicates_eliminating_tool_Win_${{ steps.get_version.outputs.version }}
 
   build-macos:
     name: 打包 macOS 版本
@@ -67,49 +95,70 @@ jobs:
         python -m pip install --upgrade pip
         pip install pandas openpyxl numpy pyinstaller
     
+    - name: 獲取版本號
+      id: get_version
+      run: |
+        if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+          version="${{ github.ref }}"
+          version="${version#refs/tags/}"
+        else
+          version="dev"
+        fi
+        echo "version=$version" >> $GITHUB_OUTPUT
+    
     - name: 打包 macOS 版本
       run: |
-        pyinstaller --onefile --windowed --name="質譜數據處理工具" ms_processor.py
+        pyinstaller --onefile --windowed --name="Replicates_eliminating_tool_${{ steps.get_version.outputs.version }}" ms_processor.py
     
-    - name: 移除隔離屬性
+    - name: 創建資料夾結構
       run: |
-        xattr -cr dist/質譜數據處理工具 || true
+        version="${{ steps.get_version.outputs.version }}"
+        folderName="Replicates_eliminating_tool_macOS_$version"
+        mkdir -p "$folderName/output"
+        mv "dist/Replicates_eliminating_tool_$version" "$folderName/"
+        xattr -cr "$folderName/Replicates_eliminating_tool_$version" || true
     
     - name: 創建使用說明
       run: |
-        cat > dist/使用說明.txt << 'EOF'
-        質譜數據處理工具 v1.0 - macOS 版本
+        version="${{ steps.get_version.outputs.version }}"
+        folderName="Replicates_eliminating_tool_macOS_$version"
+        cat > "$folderName/README.txt" << 'EOF'
+        MS Data Replicates Eliminating Tool $version - macOS Version
 
-        【使用方法】
-        1. 雙擊執行程式
-        2. 選擇數據檔案 (支援 Excel/CSV/TSV)
-        3. 調整參數後點擊「開始處理」
+        【How to Use】
+        1. Double-click to run the program
+        2. Select data file (supports Excel/CSV/TSV)
+        3. Adjust parameters and click "Start Processing"
+        4. Processed files will be saved in the "output" folder
 
-        【首次執行重要說明】
-        如果提示「無法打開，因為來自未識別的開發者」:
+        【First Run Important Notes】
+        If you see "Cannot open because it is from an unidentified developer":
 
-        方法 1 (推薦):
-          1. 右鍵點擊程式
-          2. 選擇「打開」
-          3. 再次點擊「打開」確認
+        Method 1 (Recommended):
+          1. Right-click the program
+          2. Select "Open"
+          3. Click "Open" again to confirm
 
-        方法 2:
-          終端機執行: xattr -cr "質譜數據處理工具"
+        Method 2:
+          Run in Terminal: xattr -cr "Replicates_eliminating_tool_$version"
 
-        方法 3:
-          系統偏好設定 → 安全性與隱私 → 仍要打開
+        Method 3:
+          System Preferences → Security & Privacy → Open Anyway
 
-        【系統需求】
-        macOS 10.13 (High Sierra) 或更新版本
+        【System Requirements】
+        macOS 10.13 (High Sierra) or newer
+
+        【Notes】
+        - Output files will be automatically saved in the "output" folder
+        - The output folder is in the same directory as the executable
         EOF
+        sed -i '' "s/\$version/$version/g" "$folderName/README.txt"
     
     - name: 上傳 macOS 產物
       uses: actions/upload-artifact@v4
       with:
         name: macOS-版本
-        path: |
-          dist/質譜數據處理工具
-          dist/使用說明.txt
+        path: Replicates_eliminating_tool_macOS_${{ steps.get_version.outputs.version }}
 
   build-linux:
     name: 打包 Linux 版本
@@ -129,37 +178,57 @@ jobs:
         python -m pip install --upgrade pip
         pip install pandas openpyxl numpy pyinstaller
     
+    - name: 獲取版本號
+      id: get_version
+      run: |
+        if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+          version="${{ github.ref }}"
+          version="${version#refs/tags/}"
+        else
+          version="dev"
+        fi
+        echo "version=$version" >> $GITHUB_OUTPUT
+    
     - name: 打包 Linux 版本
       run: |
-        pyinstaller --onefile --windowed --name="質譜數據處理工具" ms_processor.py
+        pyinstaller --onefile --windowed --name="Replicates_eliminating_tool_${{ steps.get_version.outputs.version }}" ms_processor.py
     
-    - name: 設定執行權限
+    - name: 創建資料夾結構
       run: |
-        chmod +x dist/質譜數據處理工具
+        version="${{ steps.get_version.outputs.version }}"
+        folderName="Replicates_eliminating_tool_Linux_$version"
+        mkdir -p "$folderName/output"
+        mv "dist/Replicates_eliminating_tool_$version" "$folderName/"
+        chmod +x "$folderName/Replicates_eliminating_tool_$version"
     
     - name: 創建使用說明
       run: |
-        cat > dist/使用說明.txt << 'EOF'
-        質譜數據處理工具 v1.0 - Linux 版本
+        version="${{ steps.get_version.outputs.version }}"
+        folderName="Replicates_eliminating_tool_Linux_$version"
+        cat > "$folderName/README.txt" << EOF
+        MS Data Replicates Eliminating Tool $version - Linux Version
 
-        【使用方法】
-        1. 設定執行權限: chmod +x 質譜數據處理工具
-        2. 執行程式: ./質譜數據處理工具
-        3. 選擇數據檔案 (支援 Excel/CSV/TSV)
-        4. 調整參數後點擊「開始處理」
+        【How to Use】
+        1. Set execute permission: chmod +x Replicates_eliminating_tool_$version
+        2. Run program: ./Replicates_eliminating_tool_$version
+        3. Select data file (supports Excel/CSV/TSV)
+        4. Adjust parameters and click "Start Processing"
+        5. Processed files will be saved in the "output" folder
 
-        【系統需求】
-        - Ubuntu 18.04+ / Debian 10+ / Fedora 30+ 或相容發行版
-        - 需要 X11 或 Wayland 顯示伺服器
+        【System Requirements】
+        - Ubuntu 18.04+ / Debian 10+ / Fedora 30+ or compatible distributions
+        - Requires X11 or Wayland display server
+
+        【Notes】
+        - Output files will be automatically saved in the "output" folder
+        - The output folder is in the same directory as the executable
         EOF
     
     - name: 上傳 Linux 產物
       uses: actions/upload-artifact@v4
       with:
         name: Linux-版本
-        path: |
-          dist/質譜數據處理工具
-          dist/使用說明.txt
+        path: Replicates_eliminating_tool_Linux_${{ steps.get_version.outputs.version }}
 
   create-release:
     name: 創建發布版本
@@ -168,40 +237,49 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     
     steps:
+    - name: 獲取版本號
+      id: get_version
+      run: |
+        version="${{ github.ref }}"
+        version="${version#refs/tags/}"
+        echo "version=$version" >> $GITHUB_OUTPUT
+    
     - name: 下載所有產物
       uses: actions/download-artifact@v4
     
     - name: 壓縮各平台檔案
       run: |
+        version="${{ steps.get_version.outputs.version }}"
         cd Windows-版本
-        zip -r ../質譜數據處理工具-Windows.zip *
+        zip -r "../Replicates_eliminating_tool_Win_$version.zip" "Replicates_eliminating_tool_Win_$version"
         cd ../macOS-版本
-        zip -r ../質譜數據處理工具-macOS.zip *
+        zip -r "../Replicates_eliminating_tool_macOS_$version.zip" "Replicates_eliminating_tool_macOS_$version"
         cd ../Linux-版本
-        zip -r ../質譜數據處理工具-Linux.zip *
+        zip -r "../Replicates_eliminating_tool_Linux_$version.zip" "Replicates_eliminating_tool_Linux_$version"
         cd ..
     
     - name: 創建 Release
       uses: softprops/action-gh-release@v1
       with:
         files: |
-          質譜數據處理工具-Windows.zip
-          質譜數據處理工具-macOS.zip
-          質譜數據處理工具-Linux.zip
+          Replicates_eliminating_tool_Win_${{ steps.get_version.outputs.version }}.zip
+          Replicates_eliminating_tool_macOS_${{ steps.get_version.outputs.version }}.zip
+          Replicates_eliminating_tool_Linux_${{ steps.get_version.outputs.version }}.zip
         body: |
-          ## 質譜數據處理工具 ${{ github.ref_name }}
+          ## MS Data Replicates Eliminating Tool ${{ steps.get_version.outputs.version }}
           
-          ### 功能
-          - 自動識別 RT, m/z, Intensity 欄位
-          - 去除重複訊號（基於容差）
-          - 按強度排序
-          - 支援 Excel, CSV, TSV 格式
+          ### Features
+          - Automatically identify RT, m/z, Intensity columns
+          - Remove duplicate signals (based on tolerance)
+          - Sort by intensity
+          - Support Excel, CSV, TSV formats
+          - Auto-save to output folder
           
-          ### 下載說明
-          - **Windows 用戶**: 下載 `質譜數據處理工具-Windows.zip`
-          - **Mac 用戶**: 下載 `質譜數據處理工具-macOS.zip`
-          - **Linux 用戶**: 下載 `質譜數據處理工具-Linux.zip`
+          ### Download Instructions
+          - **Windows Users**: Download `Replicates_eliminating_tool_Win_${{ steps.get_version.outputs.version }}.zip`
+          - **Mac Users**: Download `Replicates_eliminating_tool_macOS_${{ steps.get_version.outputs.version }}.zip`
+          - **Linux Users**: Download `Replicates_eliminating_tool_Linux_${{ steps.get_version.outputs.version }}.zip`
           
-          解壓縮後查看「使用說明.txt」
+          Extract and read "README.txt" for instructions
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
