@@ -299,14 +299,46 @@ class MSProcessorGUI:
         # Get the directory where the executable is located
         if getattr(sys, 'frozen', False):
             # Running as compiled executable
-            self.base_dir = Path(sys.executable).parent
+            if self.is_macos:
+                # For macOS .app bundle, get the directory containing the .app
+                # sys.executable points to: YourApp.app/Contents/MacOS/YourApp
+                # We want the directory containing YourApp.app
+                executable_path = Path(sys.executable)
+                # Go up: MacOS -> Contents -> YourApp.app -> parent directory
+                app_bundle = executable_path.parent.parent.parent
+                self.base_dir = app_bundle.parent
+            else:
+                # For Windows executable
+                self.base_dir = Path(sys.executable).parent
         else:
             # Running as script
             self.base_dir = Path(__file__).parent
         
-        # Create output directory
-        self.output_dir = self.base_dir / "output"
-        self.output_dir.mkdir(exist_ok=True)
+        # Create output directory with error handling
+        try:
+            self.output_dir = self.base_dir / "output"
+            self.output_dir.mkdir(exist_ok=True)
+            # Test write permission
+            test_file = self.output_dir / ".write_test"
+            test_file.touch()
+            test_file.unlink()
+        except (PermissionError, OSError) as e:
+            # If we can't write to the app directory, use user's Documents folder
+            if self.is_macos:
+                home = Path.home()
+                self.output_dir = home / "Documents" / "MS_Data_Output"
+            else:
+                # Windows fallback to Documents
+                home = Path.home()
+                self.output_dir = home / "Documents" / "MS_Data_Output"
+            
+            try:
+                self.output_dir.mkdir(parents=True, exist_ok=True)
+            except Exception as mkdir_error:
+                # Last resort: use temporary directory
+                import tempfile
+                self.output_dir = Path(tempfile.gettempdir()) / "MS_Data_Output"
+                self.output_dir.mkdir(parents=True, exist_ok=True)
         
         self.create_widgets()
     
@@ -623,6 +655,7 @@ class MSProcessorGUI:
                 top_n = None
             
             self.update_status("Starting processing...")
+            self.update_status(f"Output directory: {self.output_dir}")
             
             # Create processor
             processor = MSDataProcessor(mz_tolerance_ppm=mz_tol, rt_tolerance=rt_tol)
@@ -645,6 +678,17 @@ class MSProcessorGUI:
             output_filename = f"processed_{input_path.stem}_{timestamp}{input_path.suffix}"
             output_path = self.output_dir / output_filename
             
+            # Ensure output directory exists and is writable
+            try:
+                self.output_dir.mkdir(parents=True, exist_ok=True)
+            except Exception as mkdir_error:
+                self.update_status(f"\nWarning: Could not create output directory: {mkdir_error}")
+                # Fallback to Desktop
+                desktop = Path.home() / "Desktop" / "MS_Data_Output"
+                desktop.mkdir(parents=True, exist_ok=True)
+                output_path = desktop / output_filename
+                self.update_status(f"Using alternative location: {desktop}")
+            
             # Save results
             self.update_status("\nSaving results...")
             processor.save_results(df_result, str(output_path))
@@ -657,11 +701,19 @@ class MSProcessorGUI:
             self.update_status(f"Output count: {stats['output_count']} signals")
             self.update_status(f"\nResults saved to:\n{output_path}")
             
+            # Show file in Finder/Explorer
+            if self.is_macos:
+                import subprocess
+                subprocess.run(["open", "-R", str(output_path)])
+            
             messagebox.showinfo("Success", f"Processing complete!\n\nResults saved to:\n{output_path}")
             
         except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
             messagebox.showerror("Error", f"An error occurred during processing:\n{str(e)}")
             self.update_status(f"\nError: {str(e)}")
+            self.update_status(f"\nDetails:\n{error_details}")
 
 
 def main():

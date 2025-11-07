@@ -232,25 +232,38 @@ jobs:
         System Preferences Method:
           System Preferences → Security & Privacy → "Open Anyway" button
 
+        【Output Location】
+        Due to macOS security restrictions, output files will be saved to:
+          ~/Documents/MS_Data_Output/
+        
+        The app will automatically open this folder after processing.
+
         【Using the Tool】
         1. Select data file (supports Excel/CSV/TSV)
         2. Adjust parameters
         3. Click "Start Processing"
-        4. Processed files will be saved in the "output" folder
+        4. Processed files will be saved in Documents/MS_Data_Output
 
         【Troubleshooting】
+        
+        Read-only file system error:
+          - This is normal for .app bundles
+          - Files are automatically saved to ~/Documents/MS_Data_Output/
+          - Check the processing status window for the exact save location
+        
         If the app still won't open:
         1. Check Console.app for error messages
         2. Try running from Terminal: ./Replicates_eliminating_tool_$version.app/Contents/MacOS/Replicates_eliminating_tool_$version
-        3. Ensure you have Python 3.11+ installed
+        3. Grant Full Disk Access in System Preferences → Security & Privacy
 
         【System Requirements】
         - macOS 10.13 (High Sierra) or newer
         - No additional Python installation needed (bundled)
 
         【Notes】
-        - Output files are saved in the "output" folder
+        - Output files are saved in ~/Documents/MS_Data_Output/
         - The .app bundle is self-contained
+        - First run may require security permissions
         EOF
         sed -i '' "s/\$version/$version/g" "$folderName/README.txt"
     
