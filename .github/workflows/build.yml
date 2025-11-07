@@ -90,6 +90,10 @@ jobs:
       with:
         python-version: '3.11'
     
+    - name: 安裝系統依賴
+      run: |
+        brew install python-tk@3.11
+    
     - name: 安裝依賴
       run: |
         python -m pip install --upgrade pip
@@ -106,17 +110,97 @@ jobs:
         fi
         echo "version=$version" >> $GITHUB_OUTPUT
     
-    - name: 打包 macOS 版本
+    - name: 創建 PyInstaller spec 文件
       run: |
-        pyinstaller --onefile --windowed --name="Replicates_eliminating_tool_${{ steps.get_version.outputs.version }}" ms_processor.py
+        version="${{ steps.get_version.outputs.version }}"
+        cat > ms_processor.spec << 'EOF'
+        # -*- mode: python ; coding: utf-8 -*-
+        
+        block_cipher = None
+        
+        a = Analysis(
+            ['ms_processor.py'],
+            pathex=[],
+            binaries=[],
+            datas=[],
+            hiddenimports=['pandas', 'openpyxl', 'numpy', 'tkinter'],
+            hookspath=[],
+            hooksconfig={},
+            runtime_hooks=[],
+            excludes=[],
+            win_no_prefer_redirects=False,
+            win_private_assemblies=False,
+            cipher=block_cipher,
+            noarchive=False,
+        )
+        
+        pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+        
+        exe = EXE(
+            pyz,
+            a.scripts,
+            a.binaries,
+            a.zipfiles,
+            a.datas,
+            [],
+            name='Replicates_eliminating_tool_VERSION',
+            debug=False,
+            bootloader_ignore_signals=False,
+            strip=False,
+            upx=True,
+            upx_exclude=[],
+            runtime_tmpdir=None,
+            console=False,
+            disable_windowed_traceback=False,
+            target_arch=None,
+            codesign_identity=None,
+            entitlements_file=None,
+        )
+        
+        app = BUNDLE(
+            exe,
+            name='Replicates_eliminating_tool_VERSION.app',
+            icon=None,
+            bundle_identifier='com.mstools.replicates-eliminating',
+            info_plist={
+                'NSHighResolutionCapable': 'True',
+                'LSMinimumSystemVersion': '10.13.0',
+            },
+        )
+        EOF
+        sed -i '' "s/VERSION/$version/g" ms_processor.spec
+    
+    - name: 打包 macOS 版本 (App Bundle)
+      run: |
+        version="${{ steps.get_version.outputs.version }}"
+        pyinstaller ms_processor.spec
     
     - name: 創建資料夾結構
       run: |
         version="${{ steps.get_version.outputs.version }}"
         folderName="Replicates_eliminating_tool_macOS_$version"
         mkdir -p "$folderName/output"
-        mv "dist/Replicates_eliminating_tool_$version" "$folderName/"
-        xattr -cr "$folderName/Replicates_eliminating_tool_$version" || true
+        
+        # 移動 .app bundle
+        mv "dist/Replicates_eliminating_tool_$version.app" "$folderName/"
+        
+        # 移除隔離屬性
+        xattr -cr "$folderName/Replicates_eliminating_tool_$version.app" || true
+        
+        # 設定執行權限
+        chmod -R 755 "$folderName/Replicates_eliminating_tool_$version.app"
+    
+    - name: 創建啟動腳本 (備用方案)
+      run: |
+        version="${{ steps.get_version.outputs.version }}"
+        folderName="Replicates_eliminating_tool_macOS_$version"
+        cat > "$folderName/Run.command" << 'SCRIPT'
+        #!/bin/bash
+        cd "$(dirname "$0")"
+        open "Replicates_eliminating_tool_VERSION.app"
+        SCRIPT
+        sed -i '' "s/VERSION/$version/g" "$folderName/Run.command"
+        chmod +x "$folderName/Run.command"
     
     - name: 創建使用說明
       run: |
@@ -126,33 +210,87 @@ jobs:
         MS Data Replicates Eliminating Tool $version - macOS Version
 
         【How to Use】
-        1. Double-click to run the program
-        2. Select data file (supports Excel/CSV/TSV)
-        3. Adjust parameters and click "Start Processing"
-        4. Processed files will be saved in the "output" folder
+        Method 1 (Recommended):
+          1. Double-click "Replicates_eliminating_tool_$version.app"
+          
+        Method 2 (If Method 1 fails):
+          1. Double-click "Run.command"
 
         【First Run Important Notes】
         If you see "Cannot open because it is from an unidentified developer":
 
-        Method 1 (Recommended):
-          1. Right-click the program
+        Quick Fix:
+          1. Right-click the .app file
           2. Select "Open"
           3. Click "Open" again to confirm
 
-        Method 2:
-          Run in Terminal: xattr -cr "Replicates_eliminating_tool_$version"
+        Alternative Method:
+          1. Open Terminal in this folder
+          2. Run: xattr -cr "Replicates_eliminating_tool_$version.app"
+          3. Double-click the .app file again
 
-        Method 3:
-          System Preferences → Security & Privacy → Open Anyway
+        System Preferences Method:
+          System Preferences → Security & Privacy → "Open Anyway" button
+
+        【Using the Tool】
+        1. Select data file (supports Excel/CSV/TSV)
+        2. Adjust parameters
+        3. Click "Start Processing"
+        4. Processed files will be saved in the "output" folder
+
+        【Troubleshooting】
+        If the app still won't open:
+        1. Check Console.app for error messages
+        2. Try running from Terminal: ./Replicates_eliminating_tool_$version.app/Contents/MacOS/Replicates_eliminating_tool_$version
+        3. Ensure you have Python 3.11+ installed
 
         【System Requirements】
-        macOS 10.13 (High Sierra) or newer
+        - macOS 10.13 (High Sierra) or newer
+        - No additional Python installation needed (bundled)
 
         【Notes】
-        - Output files will be automatically saved in the "output" folder
-        - The output folder is in the same directory as the executable
+        - Output files are saved in the "output" folder
+        - The .app bundle is self-contained
         EOF
         sed -i '' "s/\$version/$version/g" "$folderName/README.txt"
+    
+    - name: 創建診斷腳本
+      run: |
+        version="${{ steps.get_version.outputs.version }}"
+        folderName="Replicates_eliminating_tool_macOS_$version"
+        cat > "$folderName/diagnose.command" << 'SCRIPT'
+        #!/bin/bash
+        cd "$(dirname "$0")"
+        echo "=== Replicates Eliminating Tool - Diagnostics ==="
+        echo ""
+        echo "Checking app bundle..."
+        if [ -d "Replicates_eliminating_tool_VERSION.app" ]; then
+            echo "✓ App bundle found"
+            echo ""
+            echo "Checking permissions..."
+            ls -la "Replicates_eliminating_tool_VERSION.app/Contents/MacOS/"
+            echo ""
+            echo "Checking for quarantine attribute..."
+            xattr "Replicates_eliminating_tool_VERSION.app"
+            echo ""
+            echo "Attempting to run..."
+            ./Replicates_eliminating_tool_VERSION.app/Contents/MacOS/Replicates_eliminating_tool_VERSION
+        else
+            echo "✗ App bundle not found"
+        fi
+        echo ""
+        read -p "Press Enter to close..."
+        SCRIPT
+        sed -i '' "s/VERSION/$version/g" "$folderName/diagnose.command"
+        chmod +x "$folderName/diagnose.command"
+    
+    - name: 驗證打包結果
+      run: |
+        version="${{ steps.get_version.outputs.version }}"
+        folderName="Replicates_eliminating_tool_macOS_$version"
+        echo "Checking bundle structure..."
+        ls -la "$folderName/"
+        ls -la "$folderName/Replicates_eliminating_tool_$version.app/Contents/MacOS/" || echo "Warning: MacOS directory not found"
     
     - name: 上傳 macOS 產物
       uses: actions/upload-artifact@v4
