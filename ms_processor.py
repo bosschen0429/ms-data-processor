@@ -274,6 +274,19 @@ class MSProcessorGUI:
         self.root = root
         self.root.title("MS Data Deduplication Tool")
         self.root.geometry("700x550")
+        
+        # Detect platform and apply appropriate styling
+        self.is_macos = sys.platform == 'darwin'
+        
+        if self.is_macos:
+            # macOS specific configuration
+            try:
+                # Use ttk.Style for better macOS compatibility
+                self.style = ttk.Style()
+                self.style.theme_use('aqua')
+            except:
+                pass
+        
         self.root.configure(bg=self.COLORS['bg'])
         
         # Make window non-resizable for consistent layout
@@ -308,6 +321,44 @@ class MSProcessorGUI:
         )
         return frame
     
+    def _create_button(self, parent, text, command, color_key='primary', **kwargs):
+        """Create a styled button with platform-specific handling"""
+        if self.is_macos:
+            # Use ttk.Button for macOS with custom styling
+            button = ttk.Button(
+                parent,
+                text=text,
+                command=command,
+                **kwargs
+            )
+            # Apply hover effect using bind
+            def on_enter(e):
+                # macOS ttk buttons handle their own hover states
+                pass
+            def on_leave(e):
+                pass
+            button.bind("<Enter>", on_enter)
+            button.bind("<Leave>", on_leave)
+        else:
+            # Use tk.Button with full styling for Windows/Linux
+            button = tk.Button(
+                parent,
+                text=text,
+                command=command,
+                bg=self.COLORS[color_key],
+                fg="white",
+                font=("Segoe UI", kwargs.get('font_size', 10), "bold"),
+                relief="flat",
+                cursor="hand2",
+                **{k: v for k, v in kwargs.items() if k not in ['font_size']}
+            )
+            dark_color = color_key + '_dark'
+            if dark_color in self.COLORS:
+                button.bind("<Enter>", lambda e: button.config(bg=self.COLORS[dark_color]))
+                button.bind("<Leave>", lambda e: button.config(bg=self.COLORS[color_key]))
+        
+        return button
+    
     def create_widgets(self):
         # Main container with padding
         main_container = tk.Frame(self.root, bg=self.COLORS['bg'])
@@ -317,10 +368,13 @@ class MSProcessorGUI:
         title_frame = tk.Frame(main_container, bg=self.COLORS['bg'])
         title_frame.pack(fill="x", pady=(0, 20))
         
+        title_font = ("SF Pro Display", 24, "bold") if self.is_macos else ("Segoe UI", 24, "bold")
+        subtitle_font = ("SF Pro Text", 10) if self.is_macos else ("Segoe UI", 10)
+        
         title_label = tk.Label(
             title_frame,
             text="MS Data Deduplication Tool",
-            font=("Segoe UI", 24, "bold"),
+            font=title_font,
             bg=self.COLORS['bg'],
             fg=self.COLORS['text']
         )
@@ -329,7 +383,7 @@ class MSProcessorGUI:
         subtitle_label = tk.Label(
             title_frame,
             text="Remove duplicate signals and export top results",
-            font=("Segoe UI", 10),
+            font=subtitle_font,
             bg=self.COLORS['bg'],
             fg=self.COLORS['text_secondary']
         )
@@ -353,31 +407,42 @@ class MSProcessorGUI:
         file_row = tk.Frame(file_inner, bg=self.COLORS['card'])
         file_row.pack(fill="x")
         
+        label_font = ("SF Pro Text", 9) if self.is_macos else ("Segoe UI", 9)
+        
         self.file_label = tk.Label(
             file_row,
             text="No file selected",
-            font=("Segoe UI", 9),
+            font=label_font,
             bg=self.COLORS['card'],
             fg=self.COLORS['text_secondary'],
             anchor="w"
         )
         self.file_label.pack(side="left", fill="x", expand=True)
         
-        select_btn = tk.Button(
-            file_row,
-            text="Browse Files",
-            command=self.select_file,
-            bg=self.COLORS['primary'],
-            fg="white",
-            font=("Segoe UI", 10, "bold"),
-            relief="flat",
-            cursor="hand2",
-            padx=20,
-            pady=8
-        )
+        # Create browse button
+        if self.is_macos:
+            select_btn = ttk.Button(
+                file_row,
+                text="Browse Files",
+                command=self.select_file
+            )
+        else:
+            select_btn = tk.Button(
+                file_row,
+                text="Browse Files",
+                command=self.select_file,
+                bg=self.COLORS['primary'],
+                fg="white",
+                font=("Segoe UI", 10, "bold"),
+                relief="flat",
+                cursor="hand2",
+                padx=20,
+                pady=8
+            )
+            select_btn.bind("<Enter>", lambda e: select_btn.config(bg=self.COLORS['primary_dark']))
+            select_btn.bind("<Leave>", lambda e: select_btn.config(bg=self.COLORS['primary']))
+        
         select_btn.pack(side="right")
-        select_btn.bind("<Enter>", lambda e: select_btn.config(bg=self.COLORS['primary_dark']))
-        select_btn.bind("<Leave>", lambda e: select_btn.config(bg=self.COLORS['primary']))
         
         # Parameters card
         param_card = self.create_card(main_container)
@@ -411,21 +476,29 @@ class MSProcessorGUI:
                                "Enter 0 for all signals")
         
         # Process button
-        process_btn = tk.Button(
-            main_container,
-            text="Start Processing",
-            command=self.process_data,
-            bg=self.COLORS['success'],
-            fg="white",
-            font=("Segoe UI", 12, "bold"),
-            relief="flat",
-            cursor="hand2",
-            padx=30,
-            pady=15
-        )
+        if self.is_macos:
+            process_btn = ttk.Button(
+                main_container,
+                text="Start Processing",
+                command=self.process_data
+            )
+        else:
+            process_btn = tk.Button(
+                main_container,
+                text="Start Processing",
+                command=self.process_data,
+                bg=self.COLORS['success'],
+                fg="white",
+                font=("Segoe UI", 12, "bold"),
+                relief="flat",
+                cursor="hand2",
+                padx=30,
+                pady=15
+            )
+            process_btn.bind("<Enter>", lambda e: process_btn.config(bg=self.COLORS['success_dark']))
+            process_btn.bind("<Leave>", lambda e: process_btn.config(bg=self.COLORS['success']))
+        
         process_btn.pack(pady=(0, 15))
-        process_btn.bind("<Enter>", lambda e: process_btn.config(bg=self.COLORS['success_dark']))
-        process_btn.bind("<Leave>", lambda e: process_btn.config(bg=self.COLORS['success']))
         
         # Status card
         status_card = self.create_card(main_container)
@@ -442,10 +515,12 @@ class MSProcessorGUI:
             fg=self.COLORS['text']
         ).pack(anchor="w", pady=(0, 10))
         
+        text_font = ("Menlo", 9) if self.is_macos else ("Consolas", 9)
+        
         self.status_text = tk.Text(
             status_inner,
             height=8,
-            font=("Consolas", 9),
+            font=text_font,
             bg="#FAFAFA",
             fg=self.COLORS['text'],
             relief="flat",
@@ -459,11 +534,15 @@ class MSProcessorGUI:
         row_frame = tk.Frame(parent, bg=self.COLORS['card'])
         row_frame.pack(fill="x", pady=8)
         
+        param_font = ("SF Pro Text", 10, "bold") if self.is_macos else ("Segoe UI", 10, "bold")
+        hint_font = ("SF Pro Text", 9) if self.is_macos else ("Segoe UI", 9)
+        entry_font = ("SF Pro Text", 10) if self.is_macos else ("Segoe UI", 10)
+        
         # Left side: Label
         tk.Label(
             row_frame,
             text=label_text,
-            font=("Segoe UI", 10, "bold"),
+            font=param_font,
             bg=self.COLORS['card'],
             fg=self.COLORS['text'],
             anchor="w",
@@ -475,7 +554,7 @@ class MSProcessorGUI:
         entry = tk.Entry(
             row_frame,
             textvariable=entry_var,
-            font=("Segoe UI", 10),
+            font=entry_font,
             bg="white",
             fg=self.COLORS['text'],
             relief="solid",
@@ -488,7 +567,7 @@ class MSProcessorGUI:
         tk.Label(
             row_frame,
             text=hint_text,
-            font=("Segoe UI", 9),
+            font=hint_font,
             bg=self.COLORS['card'],
             fg=self.COLORS['text_secondary'],
             anchor="w"
