@@ -27,19 +27,19 @@ class MSDataProcessor:
     def load_data(self, file_path):
         """
         Load data and automatically identify columns (supports Excel, CSV, TSV)
-        
+
         Parameters:
         -----------
         file_path : str
             File path
-            
+
         Returns:
         --------
         pd.DataFrame
             DataFrame with all columns
         """
         file_path = str(file_path)
-        
+
         # Read file based on extension
         if file_path.endswith('.csv'):
             df = pd.read_csv(file_path)
@@ -49,72 +49,54 @@ class MSDataProcessor:
             df = pd.read_excel(file_path)
         else:
             raise ValueError(f"Unsupported file format. Supported: .xlsx, .xls, .csv, .tsv, .txt")
-        
-        # Identify MZmine columns (priority)
-        mzmine_rt_col = self._find_column(df.columns, ['mzmine rt', 'mzmine rt (min)'])
-        mzmine_mz_col = self._find_column(df.columns, ['mzmine m/z', 'mzmine mz'])
-        mzmine_area_col = self._find_column(df.columns, ['peak area', 'area'])
-        mzmine_id_col = self._find_column(df.columns, ['mzmine id'])
-        
-        # Identify FeatureHunter columns (fallback)
-        fh_rt_col = self._find_column(df.columns, [
-            'rt', 'retention time', 'retention_time', 'retentiontime',
-            'rt (min)', 'rt(min)', 'retention time (min)'
-        ])
-        fh_mz_col = self._find_column(df.columns, [
-            'precursor ion m/z', 'precursor m/z', 'precursormz',
-            'm/z', 'mz', 'm_z', 'mass'
-        ])
-        fh_intensity_col = self._find_column(df.columns, [
-            'precursor ion intensity', 'precursor intensity', 'precursorintensity',
-            'intensity', 'int', 'abundance', 'height'
-        ])
-        
-        # Filter out rows where MZmine data is NA
-        if mzmine_id_col and mzmine_rt_col and mzmine_mz_col and mzmine_area_col:
-            # Remove rows where any MZmine column is NA
-            df = df[
-                df[mzmine_id_col].notna() & 
-                (df[mzmine_id_col].astype(str).str.strip().str.upper() != 'NA') &
-                df[mzmine_rt_col].notna() & 
-                df[mzmine_mz_col].notna() & 
-                df[mzmine_area_col].notna()
-            ]
-            
-            # Use MZmine columns
-            self.rt_col = mzmine_rt_col
-            self.mz_col = mzmine_mz_col
-            self.intensity_col = mzmine_area_col
-            self.data_source = "MZmine"
-        elif fh_rt_col and fh_mz_col and fh_intensity_col:
-            # Fallback to FeatureHunter columns
-            self.rt_col = fh_rt_col
-            self.mz_col = fh_mz_col
-            self.intensity_col = fh_intensity_col
-            self.data_source = "FeatureHunter"
+
+        # 自動識別欄位（只要包含關鍵詞即可，大小寫不敏感）
+        rt_col = self._find_column(df.columns, ['rt', 'retention'])
+        mz_col = self._find_column(df.columns, ['m/z', 'mz', 'mass'])
+        intensity_col = self._find_column(df.columns, ['area', 'intensity', 'abundance', 'height'])
+        id_col = self._find_column(df.columns, ['id'])
+
+        # 判斷資料來源（僅供顯示）
+        has_mzmine = any('mzmine' in str(col).lower() for col in df.columns)
+        self.data_source = "MZmine" if has_mzmine else "FeatureHunter"
+
+        if rt_col and mz_col and intensity_col:
+            self.rt_col = rt_col
+            self.mz_col = mz_col
+            self.intensity_col = intensity_col
+
+            # 如果有 ID 欄位且資料來源是 MZmine，過濾 NA 資料
+            if id_col and has_mzmine:
+                df = df[
+                    df[id_col].notna() &
+                    (df[id_col].astype(str).str.strip().str.upper() != 'NA') &
+                    df[rt_col].notna() &
+                    df[mz_col].notna() &
+                    df[intensity_col].notna()
+                ]
         else:
             available_cols = "\nAvailable columns: " + ", ".join(df.columns.tolist())
             raise ValueError(f"Cannot identify required columns.\nPlease check your file headers.{available_cols}")
-        
+
         self.all_columns = list(df.columns)
-        
+
         # Remove invalid data (m/z and intensity > 0)
         df = df[(df[self.mz_col] > 0) & (df[self.intensity_col] > 0)]
         df = df.dropna(subset=[self.rt_col, self.mz_col, self.intensity_col])
-        
+
         return df.reset_index(drop=True)
     
-    def _find_column(self, columns, possible_names):
+    def _find_column(self, columns, keywords):
         """
-        Find matching column name
-        
+        Find matching column name - 只要欄位名包含任一關鍵詞即可（大小寫不敏感）
+
         Parameters:
         -----------
         columns : list
             All column names
-        possible_names : list
-            List of possible column names
-            
+        keywords : list
+            Keywords where at least ONE must be present in the column name
+
         Returns:
         --------
         str or None
@@ -122,58 +104,89 @@ class MSDataProcessor:
         """
         for col in columns:
             col_lower = str(col).lower().strip()
-            for name in possible_names:
-                if name in col_lower:
-                    return col
+            if any(kw.lower() in col_lower for kw in keywords):
+                return col
         return None
     
     def find_unique_signals(self, df):
         """
         Find unique signals (remove duplicates), keep all other columns
-        
+        使用分箱策略優化效能，避免 O(n²) 複雜度
+
         Parameters:
         -----------
         df : pd.DataFrame
             Original data
-            
+
         Returns:
         --------
         pd.DataFrame
             De-duplicated data
         """
-        unique_signals = []
-        unique_indices = []
-        
-        for idx, row in df.iterrows():
-            rt = row[self.rt_col]
-            mz = row[self.mz_col]
-            intensity = row[self.intensity_col]
-            
-            # Check for duplicates
-            is_unique = True
-            for i, existing_idx in enumerate(unique_indices):
-                existing_row = df.loc[existing_idx]
-                existing_rt = existing_row[self.rt_col]
-                existing_mz = existing_row[self.mz_col]
-                existing_intensity = existing_row[self.intensity_col]
-                
-                # RT tolerance check
-                if abs(existing_rt - rt) <= self.rt_tolerance:
-                    # m/z tolerance check (use larger m/z as denominator)
-                    reference_mz = max(existing_mz, mz)
-                    if reference_mz > 0:
-                        mz_diff_ratio = abs(existing_mz - mz) / reference_mz
-                        if mz_diff_ratio <= self.mz_tolerance:
-                            # Found duplicate, keep higher intensity
-                            if intensity > existing_intensity:
-                                unique_indices[i] = idx
-                            is_unique = False
-                            break
-            
-            if is_unique:
-                unique_indices.append(idx)
-        
-        return df.loc[unique_indices].reset_index(drop=True)
+        if len(df) == 0:
+            return df
+
+        from collections import defaultdict
+
+        # 提取數值陣列以加速存取
+        rt_values = df[self.rt_col].values
+        mz_values = df[self.mz_col].values
+        intensity_values = df[self.intensity_col].values
+
+        # 計算每個資料點的 RT 箱子索引
+        bin_indices = (rt_values / self.rt_tolerance).astype(int)
+
+        # 建立箱子到索引的映射
+        bins = defaultdict(list)
+        for idx in range(len(df)):
+            bins[bin_indices[idx]].append(idx)
+
+        # 追蹤哪些索引要保留
+        keep_mask = [True] * len(df)
+
+        # 對每個資料點，只比較同箱和相鄰箱的資料
+        for idx in range(len(df)):
+            if not keep_mask[idx]:
+                continue
+
+            rt = rt_values[idx]
+            mz = mz_values[idx]
+            intensity = intensity_values[idx]
+            bin_idx = bin_indices[idx]
+
+            # 檢查同箱和相鄰箱（確保不漏掉邊界情況）
+            for check_bin in [bin_idx - 1, bin_idx, bin_idx + 1]:
+                if check_bin not in bins:
+                    continue
+
+                for other_idx in bins[check_bin]:
+                    if other_idx <= idx or not keep_mask[other_idx]:
+                        continue
+
+                    other_rt = rt_values[other_idx]
+                    other_mz = mz_values[other_idx]
+                    other_intensity = intensity_values[other_idx]
+
+                    # RT tolerance check
+                    if abs(other_rt - rt) <= self.rt_tolerance:
+                        # m/z tolerance check (use larger m/z as denominator)
+                        reference_mz = max(other_mz, mz)
+                        if reference_mz > 0:
+                            mz_diff_ratio = abs(other_mz - mz) / reference_mz
+                            if mz_diff_ratio <= self.mz_tolerance:
+                                # Found duplicate, keep higher intensity
+                                if other_intensity > intensity:
+                                    keep_mask[idx] = False
+                                    break
+                                else:
+                                    keep_mask[other_idx] = False
+
+            if not keep_mask[idx]:
+                continue
+
+        # 篩選保留的資料
+        kept_indices = [i for i, keep in enumerate(keep_mask) if keep]
+        return df.iloc[kept_indices].reset_index(drop=True)
     
     def process(self, file_path, top_n=None):
         """

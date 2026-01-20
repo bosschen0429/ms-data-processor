@@ -47,6 +47,8 @@ desktop.ini
 *.tmp
 *.bak
 *.log
+tmp*
+*-cwd
 
 # Test data (optional, uncomment if needed)
 # test_data/
