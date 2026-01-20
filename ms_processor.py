@@ -27,19 +27,19 @@ class MSDataProcessor:
     def load_data(self, file_path):
         """
         Load data and automatically identify columns (supports Excel, CSV, TSV)
-
+        
         Parameters:
         -----------
         file_path : str
             File path
-
+            
         Returns:
         --------
         pd.DataFrame
             DataFrame with all columns
         """
         file_path = str(file_path)
-
+        
         # Read file based on extension
         if file_path.endswith('.csv'):
             df = pd.read_csv(file_path)
@@ -49,54 +49,54 @@ class MSDataProcessor:
             df = pd.read_excel(file_path)
         else:
             raise ValueError(f"Unsupported file format. Supported: .xlsx, .xls, .csv, .tsv, .txt")
-
+        
         # 自動識別欄位（只要包含關鍵詞即可，大小寫不敏感）
         rt_col = self._find_column(df.columns, ['rt', 'retention'])
         mz_col = self._find_column(df.columns, ['m/z', 'mz', 'mass'])
         intensity_col = self._find_column(df.columns, ['area', 'intensity', 'abundance', 'height'])
         id_col = self._find_column(df.columns, ['id'])
-
+        
         # 判斷資料來源（僅供顯示）
         has_mzmine = any('mzmine' in str(col).lower() for col in df.columns)
         self.data_source = "MZmine" if has_mzmine else "FeatureHunter"
-
+        
         if rt_col and mz_col and intensity_col:
             self.rt_col = rt_col
             self.mz_col = mz_col
             self.intensity_col = intensity_col
-
+            
             # 如果有 ID 欄位且資料來源是 MZmine，過濾 NA 資料
             if id_col and has_mzmine:
                 df = df[
-                    df[id_col].notna() &
+                    df[id_col].notna() & 
                     (df[id_col].astype(str).str.strip().str.upper() != 'NA') &
-                    df[rt_col].notna() &
-                    df[mz_col].notna() &
+                    df[rt_col].notna() & 
+                    df[mz_col].notna() & 
                     df[intensity_col].notna()
                 ]
         else:
             available_cols = "\nAvailable columns: " + ", ".join(df.columns.tolist())
             raise ValueError(f"Cannot identify required columns.\nPlease check your file headers.{available_cols}")
-
+        
         self.all_columns = list(df.columns)
-
+        
         # Remove invalid data (m/z and intensity > 0)
         df = df[(df[self.mz_col] > 0) & (df[self.intensity_col] > 0)]
         df = df.dropna(subset=[self.rt_col, self.mz_col, self.intensity_col])
-
+        
         return df.reset_index(drop=True)
     
     def _find_column(self, columns, keywords):
         """
         Find matching column name - 只要欄位名包含任一關鍵詞即可（大小寫不敏感）
-
+        
         Parameters:
         -----------
         columns : list
             All column names
         keywords : list
             Keywords where at least ONE must be present in the column name
-
+            
         Returns:
         --------
         str or None
@@ -112,12 +112,12 @@ class MSDataProcessor:
         """
         Find unique signals (remove duplicates), keep all other columns
         使用分箱策略優化效能，避免 O(n²) 複雜度
-
+        
         Parameters:
         -----------
         df : pd.DataFrame
             Original data
-
+            
         Returns:
         --------
         pd.DataFrame
@@ -125,48 +125,48 @@ class MSDataProcessor:
         """
         if len(df) == 0:
             return df
-
-        from collections import defaultdict
-
-        # 提取數值陣列以加速存取
+        
+        # 建立 RT 分箱索引以加速比較
+        # 每個箱子的大小為 rt_tolerance
         rt_values = df[self.rt_col].values
         mz_values = df[self.mz_col].values
         intensity_values = df[self.intensity_col].values
-
-        # 計算每個資料點的 RT 箱子索引
+        
+        # 計算每個資料點的箱子索引
         bin_indices = (rt_values / self.rt_tolerance).astype(int)
-
+        
         # 建立箱子到索引的映射
+        from collections import defaultdict
         bins = defaultdict(list)
         for idx in range(len(df)):
             bins[bin_indices[idx]].append(idx)
-
+        
         # 追蹤哪些索引要保留
         keep_mask = [True] * len(df)
-
+        
         # 對每個資料點，只比較同箱和相鄰箱的資料
         for idx in range(len(df)):
             if not keep_mask[idx]:
                 continue
-
+            
             rt = rt_values[idx]
             mz = mz_values[idx]
             intensity = intensity_values[idx]
             bin_idx = bin_indices[idx]
-
+            
             # 檢查同箱和相鄰箱（確保不漏掉邊界情況）
             for check_bin in [bin_idx - 1, bin_idx, bin_idx + 1]:
                 if check_bin not in bins:
                     continue
-
+                
                 for other_idx in bins[check_bin]:
                     if other_idx <= idx or not keep_mask[other_idx]:
                         continue
-
+                    
                     other_rt = rt_values[other_idx]
                     other_mz = mz_values[other_idx]
                     other_intensity = intensity_values[other_idx]
-
+                    
                     # RT tolerance check
                     if abs(other_rt - rt) <= self.rt_tolerance:
                         # m/z tolerance check (use larger m/z as denominator)
@@ -180,10 +180,10 @@ class MSDataProcessor:
                                     break
                                 else:
                                     keep_mask[other_idx] = False
-
+            
             if not keep_mask[idx]:
                 continue
-
+        
         # 篩選保留的資料
         kept_indices = [i for i, keep in enumerate(keep_mask) if keep]
         return df.iloc[kept_indices].reset_index(drop=True)
