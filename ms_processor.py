@@ -329,7 +329,7 @@ class MSProcessorGUI:
         
         # Create output directory with error handling
         try:
-            self.output_dir = self.base_dir / "output"
+            self.output_dir = self.base_dir / "output_Replicates_eliminating_tool"
             self.output_dir.mkdir(exist_ok=True)
             # Test write permission
             test_file = self.output_dir / ".write_test"
@@ -339,18 +339,18 @@ class MSProcessorGUI:
             # If we can't write to the app directory, use user's Documents folder
             if self.is_macos:
                 home = Path.home()
-                self.output_dir = home / "Documents" / "MS_Data_Output"
+                self.output_dir = home / "Documents" / "output_Replicates_eliminating_tool"
             else:
                 # Windows fallback to Documents
                 home = Path.home()
-                self.output_dir = home / "Documents" / "MS_Data_Output"
-            
+                self.output_dir = home / "Documents" / "output_Replicates_eliminating_tool"
+
             try:
                 self.output_dir.mkdir(parents=True, exist_ok=True)
             except Exception as mkdir_error:
                 # Last resort: use temporary directory
                 import tempfile
-                self.output_dir = Path(tempfile.gettempdir()) / "MS_Data_Output"
+                self.output_dir = Path(tempfile.gettempdir()) / "output_Replicates_eliminating_tool"
                 self.output_dir.mkdir(parents=True, exist_ok=True)
         
         self.create_widgets()

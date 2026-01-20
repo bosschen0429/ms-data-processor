@@ -28,6 +28,7 @@ ENV/
 
 # Output directory (processed files)
 output/
+output_Replicates_eliminating_tool/
 *.xlsx
 *.xls
 *.csv
