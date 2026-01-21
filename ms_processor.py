@@ -51,38 +51,64 @@ class MSDataProcessor:
             raise ValueError(f"Unsupported file format. Supported: .xlsx, .xls, .csv, .tsv, .txt")
         
         # 自動識別欄位（只要包含關鍵詞即可，大小寫不敏感）
+        combined_mz_rt_col = self._find_combined_mz_rt_column(df.columns)
         rt_col = self._find_column(df.columns, ['rt', 'retention'])
         mz_col = self._find_column(df.columns, ['m/z', 'mz', 'mass'])
-        intensity_col = self._find_column(df.columns, ['area', 'intensity', 'abundance', 'height'])
+        intensity_cols = self._find_columns(df.columns, ['peak area'])
+        if not intensity_cols:
+            intensity_cols = self._find_columns(df.columns, ['area', 'intensity', 'abundance', 'height'])
         id_col = self._find_column(df.columns, ['id'])
         
         # 判斷資料來源（僅供顯示）
         has_mzmine = any('mzmine' in str(col).lower() for col in df.columns)
         self.data_source = "MZmine" if has_mzmine else "FeatureHunter"
         
-        if rt_col and mz_col and intensity_col:
+        if combined_mz_rt_col:
+            mz_col = "mz"
+            rt_col = "rt"
+            if mz_col in df.columns:
+                mz_col = "__mz"
+            if rt_col in df.columns:
+                rt_col = "__rt"
+            parts = df[combined_mz_rt_col].astype(str).str.split("/", n=1, expand=True)
+            if parts.shape[1] < 2:
+                raise ValueError("Combined m/z/RT column detected but values are not in 'mz/RT' format.")
+            df[mz_col] = pd.to_numeric(parts[0].str.strip(), errors="coerce").round(4)
+            df[rt_col] = pd.to_numeric(parts[1].str.strip(), errors="coerce").round(4)
+        elif rt_col and mz_col:
+            df[rt_col] = pd.to_numeric(df[rt_col], errors="coerce").round(4)
+            df[mz_col] = pd.to_numeric(df[mz_col], errors="coerce").round(4)
+        
+        if rt_col and mz_col and intensity_cols:
             self.rt_col = rt_col
             self.mz_col = mz_col
-            self.intensity_col = intensity_col
+            self.intensity_cols = intensity_cols
+            self.intensity_col = intensity_cols[0]
             
-            # 如果有 ID 欄位且資料來源是 MZmine，過濾 NA 資料
+            # ??? ID ???????? MZmine??????
             if id_col and has_mzmine:
-                df = df[
+                mask = (
                     df[id_col].notna() & 
                     (df[id_col].astype(str).str.strip().str.upper() != 'NA') &
                     df[rt_col].notna() & 
-                    df[mz_col].notna() & 
-                    df[intensity_col].notna()
-                ]
+                    df[mz_col].notna()
+                )
+                if intensity_cols:
+                    mask &= df[intensity_cols].notna().any(axis=1)
+                df = df[mask]
         else:
             available_cols = "\nAvailable columns: " + ", ".join(df.columns.tolist())
             raise ValueError(f"Cannot identify required columns.\nPlease check your file headers.{available_cols}")
         
         self.all_columns = list(df.columns)
         
-        # Remove invalid data (m/z and intensity > 0)
-        df = df[(df[self.mz_col] > 0) & (df[self.intensity_col] > 0)]
-        df = df.dropna(subset=[self.rt_col, self.mz_col, self.intensity_col])
+        # Convert intensity columns to numeric and fill missing as 0
+        df[self.intensity_cols] = df[self.intensity_cols].apply(pd.to_numeric, errors="coerce").fillna(0)
+        
+        # Remove invalid data (m/z > 0 and any intensity > 0)
+        intensity_positive = (df[self.intensity_cols] > 0).any(axis=1)
+        df = df[(df[self.mz_col] > 0) & intensity_positive]
+        df = df.dropna(subset=[self.rt_col, self.mz_col])
         
         return df.reset_index(drop=True)
     
@@ -107,11 +133,34 @@ class MSDataProcessor:
             if any(kw.lower() in col_lower for kw in keywords):
                 return col
         return None
+
+    def _find_columns(self, columns, keywords):
+        """Find all matching column names by keyword list."""
+        matches = []
+        for col in columns:
+            col_lower = str(col).lower().strip()
+            if any(kw.lower() in col_lower for kw in keywords):
+                matches.append(col)
+        return matches
+
+    def _find_combined_mz_rt_column(self, columns):
+        """Find a combined m/z/RT column, e.g., 'mz/RT'."""
+        for col in columns:
+            col_lower = str(col).lower().strip().replace(" ", "")
+            if "mz" in col_lower and "rt" in col_lower and "/" in col_lower:
+                return col
+        return None
+
+    def _compute_occurrence_and_sum(self, df):
+        intensities = df[self.intensity_cols].fillna(0).to_numpy(dtype=float)
+        occurrence = (intensities > 0).sum(axis=1).astype(int)
+        total_intensity = intensities.sum(axis=1)
+        return occurrence, total_intensity
     
     def find_unique_signals(self, df):
         """
         Find unique signals (remove duplicates), keep all other columns
-        使用分箱策略優化效能，避免 O(n²) 複雜度
+        ????????????????????O(n?) ?????
         
         Parameters:
         -----------
@@ -125,67 +174,50 @@ class MSDataProcessor:
         """
         if len(df) == 0:
             return df
-        
-        # 建立 RT 分箱索引以加速比較
-        # 每個箱子的大小為 rt_tolerance
-        rt_values = df[self.rt_col].values
-        mz_values = df[self.mz_col].values
-        intensity_values = df[self.intensity_col].values
-        
-        # 計算每個資料點的箱子索引
-        bin_indices = (rt_values / self.rt_tolerance).astype(int)
-        
-        # 建立箱子到索引的映射
-        from collections import defaultdict
-        bins = defaultdict(list)
-        for idx in range(len(df)):
-            bins[bin_indices[idx]].append(idx)
-        
-        # 追蹤哪些索引要保留
-        keep_mask = [True] * len(df)
-        
-        # 對每個資料點，只比較同箱和相鄰箱的資料
-        for idx in range(len(df)):
-            if not keep_mask[idx]:
+
+        rt_values = df[self.rt_col].to_numpy()
+        mz_values = df[self.mz_col].to_numpy()
+        occurrence, total_intensity = self._compute_occurrence_and_sum(df)
+
+        order = np.argsort(rt_values)
+        rt_sorted = rt_values[order]
+        mz_sorted = mz_values[order]
+        occ_sorted = occurrence[order]
+        sum_sorted = total_intensity[order]
+
+        keep_mask = np.ones(len(df), dtype=bool)
+        n = len(df)
+
+        for i in range(n):
+            if not keep_mask[i]:
                 continue
-            
-            rt = rt_values[idx]
-            mz = mz_values[idx]
-            intensity = intensity_values[idx]
-            bin_idx = bin_indices[idx]
-            
-            # 檢查同箱和相鄰箱（確保不漏掉邊界情況）
-            for check_bin in [bin_idx - 1, bin_idx, bin_idx + 1]:
-                if check_bin not in bins:
+
+            rt_i = rt_sorted[i]
+            mz_i = mz_sorted[i]
+            occ_i = occ_sorted[i]
+            sum_i = sum_sorted[i]
+
+            j = i + 1
+            while j < n and (rt_sorted[j] - rt_i) <= self.rt_tolerance:
+                if not keep_mask[j]:
+                    j += 1
                     continue
-                
-                for other_idx in bins[check_bin]:
-                    if other_idx <= idx or not keep_mask[other_idx]:
-                        continue
-                    
-                    other_rt = rt_values[other_idx]
-                    other_mz = mz_values[other_idx]
-                    other_intensity = intensity_values[other_idx]
-                    
-                    # RT tolerance check
-                    if abs(other_rt - rt) <= self.rt_tolerance:
-                        # m/z tolerance check (use larger m/z as denominator)
-                        reference_mz = max(other_mz, mz)
-                        if reference_mz > 0:
-                            mz_diff_ratio = abs(other_mz - mz) / reference_mz
-                            if mz_diff_ratio <= self.mz_tolerance:
-                                # Found duplicate, keep higher intensity
-                                if other_intensity > intensity:
-                                    keep_mask[idx] = False
-                                    break
-                                else:
-                                    keep_mask[other_idx] = False
-            
-            if not keep_mask[idx]:
-                continue
-        
-        # 篩選保留的資料
-        kept_indices = [i for i, keep in enumerate(keep_mask) if keep]
+
+                mz_j = mz_sorted[j]
+                reference_mz = mz_j if mz_j > mz_i else mz_i
+                if reference_mz > 0:
+                    mz_diff_ratio = abs(mz_j - mz_i) / reference_mz
+                    if mz_diff_ratio <= self.mz_tolerance:
+                        occ_j = occ_sorted[j]
+                        sum_j = sum_sorted[j]
+                        if (occ_j > occ_i) or (occ_j == occ_i and sum_j > sum_i):
+                            keep_mask[i] = False
+                            break
+                        else:
+                            keep_mask[j] = False
+                j += 1
+
+        kept_indices = order[keep_mask]
         return df.iloc[kept_indices].reset_index(drop=True)
     
     def process(self, file_path, top_n=None):
@@ -212,8 +244,17 @@ class MSDataProcessor:
         df_unique = self.find_unique_signals(df_original)
         unique_count = len(df_unique)
         
-        # Sort by intensity
-        df_sorted = df_unique.sort_values(self.intensity_col, ascending=False).reset_index(drop=True)
+        # Sort by intensity (sum across samples if multiple)
+        if len(self.intensity_cols) == 1:
+            df_sorted = df_unique.sort_values(self.intensity_cols[0], ascending=False).reset_index(drop=True)
+        else:
+            total_intensity = df_unique[self.intensity_cols].sum(axis=1)
+            df_sorted = (
+                df_unique.assign(_total_intensity=total_intensity)
+                .sort_values("_total_intensity", ascending=False)
+                .drop(columns=["_total_intensity"])
+                .reset_index(drop=True)
+            )
         
         # Take top N
         if top_n and top_n > 0:
@@ -226,7 +267,8 @@ class MSDataProcessor:
             'original_count': original_count,
             'unique_count': unique_count,
             'output_count': len(df_result),
-            'data_source': self.data_source
+            'data_source': self.data_source,
+            'sample_count': len(self.intensity_cols)
         }
         
         return df_result, stats
@@ -256,12 +298,12 @@ class MSDataProcessor:
                 workbook = writer.book
                 worksheet = writer.sheets['Top Results']
                 
-                # Find intensity column position
-                intensity_col_idx = list(df.columns).index(self.intensity_col) + 1
-                
-                for row in range(2, len(df) + 2):
-                    cell = worksheet.cell(row=row, column=intensity_col_idx)
-                    cell.number_format = '0.00E+00'
+                # Format all intensity columns as scientific notation
+                for intensity_col in self.intensity_cols:
+                    intensity_col_idx = list(df.columns).index(intensity_col) + 1
+                    for row in range(2, len(df) + 2):
+                        cell = worksheet.cell(row=row, column=intensity_col_idx)
+                        cell.number_format = '0.00E+00'
         else:
             raise ValueError(f"Unsupported output format. Supported: .xlsx, .xls, .csv, .tsv, .txt")
 
@@ -682,8 +724,10 @@ class MSProcessorGUI:
             self.update_status(f"Identified Columns:")
             self.update_status(f"  RT: {processor.rt_col}")
             self.update_status(f"  m/z: {processor.mz_col}")
-            self.update_status(f"  Intensity: {processor.intensity_col}")
-            self.update_status(f"Other columns preserved: {len(processor.all_columns) - 3}")
+            self.update_status(f"  Intensity columns ({len(processor.intensity_cols)}): {', '.join(processor.intensity_cols)}")
+            self.update_status(f"Samples detected: {stats['sample_count']}")
+            other_cols = len(processor.all_columns) - len(processor.intensity_cols) - 2
+            self.update_status(f"Other columns preserved: {max(other_cols, 0)}")
             
             # Generate output filename with timestamp
             input_path = Path(self.input_file)
