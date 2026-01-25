@@ -42,11 +42,11 @@ class MSDataProcessor:
         
         # Read file based on extension
         if file_path.endswith('.csv'):
-            df = pd.read_csv(file_path)
+            df = pd.read_csv(file_path, keep_default_na=False)
         elif file_path.endswith('.tsv') or file_path.endswith('.txt'):
-            df = pd.read_csv(file_path, sep='\t')
+            df = pd.read_csv(file_path, sep='\t', keep_default_na=False)
         elif file_path.endswith(('.xlsx', '.xls')):
-            df = pd.read_excel(file_path)
+            df = pd.read_excel(file_path, keep_default_na=False)
         else:
             raise ValueError(f"Unsupported file format. Supported: .xlsx, .xls, .csv, .tsv, .txt")
         
@@ -58,11 +58,28 @@ class MSDataProcessor:
         if not intensity_cols:
             intensity_cols = self._find_columns(df.columns, ['area', 'intensity', 'abundance', 'height'])
         id_col = self._find_column(df.columns, ['id'])
+
+        # If header does not indicate combined m/z/RT, infer from first column values.
+        if not combined_mz_rt_col:
+            combined_mz_rt_col = self._infer_combined_mz_rt_column(df)
+
+        # If no intensity columns matched by keywords, default to all columns after m/z/RT.
+        if not intensity_cols and combined_mz_rt_col:
+            intensity_cols = self._columns_after(df.columns, combined_mz_rt_col)
+        elif not intensity_cols and rt_col and mz_col:
+            exclude = {rt_col, mz_col}
+            if id_col:
+                exclude.add(id_col)
+            intensity_cols = [col for col in df.columns if col not in exclude]
         
         # 判斷資料來源（僅供顯示）
         has_mzmine = any('mzmine' in str(col).lower() for col in df.columns)
         self.data_source = "MZmine" if has_mzmine else "FeatureHunter"
         
+        self.temp_mz_rt_cols = []
+
+        self.temp_mz_rt_cols = []
+
         if combined_mz_rt_col:
             mz_col = "mz"
             rt_col = "rt"
@@ -75,26 +92,35 @@ class MSDataProcessor:
                 raise ValueError("Combined m/z/RT column detected but values are not in 'mz/RT' format.")
             df[mz_col] = pd.to_numeric(parts[0].str.strip(), errors="coerce").round(4)
             df[rt_col] = pd.to_numeric(parts[1].str.strip(), errors="coerce").round(4)
+            # Mark derived columns for removal before output.
+            self.temp_mz_rt_cols = [mz_col, rt_col]
         elif rt_col and mz_col:
-            df[rt_col] = pd.to_numeric(df[rt_col], errors="coerce").round(4)
-            df[mz_col] = pd.to_numeric(df[mz_col], errors="coerce").round(4)
+            # Keep original values for output; parse numerics only when needed.
+            pass
         
         if rt_col and mz_col and intensity_cols:
             self.rt_col = rt_col
             self.mz_col = mz_col
             self.intensity_cols = intensity_cols
             self.intensity_col = intensity_cols[0]
+            columns_list = list(df.columns)
+            self.intensity_col_positions = [
+                i for i, col in enumerate(columns_list) if col in self.intensity_cols
+            ]
             
             # ??? ID ???????? MZmine??????
             if id_col and has_mzmine:
+                mz_num = self._numeric_series(df[self.mz_col]).round(4)
+                rt_num = self._numeric_series(df[self.rt_col]).round(4)
                 mask = (
                     df[id_col].notna() & 
                     (df[id_col].astype(str).str.strip().str.upper() != 'NA') &
-                    df[rt_col].notna() & 
-                    df[mz_col].notna()
+                    rt_num.notna() & 
+                    mz_num.notna()
                 )
                 if intensity_cols:
-                    mask &= df[intensity_cols].notna().any(axis=1)
+                    intensity_num = self._numeric_intensity_df(df)
+                    mask &= intensity_num.notna().any(axis=1)
                 df = df[mask]
         else:
             available_cols = "\nAvailable columns: " + ", ".join(df.columns.tolist())
@@ -102,13 +128,13 @@ class MSDataProcessor:
         
         self.all_columns = list(df.columns)
         
-        # Convert intensity columns to numeric and fill missing as 0
-        df[self.intensity_cols] = df[self.intensity_cols].apply(pd.to_numeric, errors="coerce").fillna(0)
-        
         # Remove invalid data (m/z > 0 and any intensity > 0)
-        intensity_positive = (df[self.intensity_cols] > 0).any(axis=1)
-        df = df[(df[self.mz_col] > 0) & intensity_positive]
-        df = df.dropna(subset=[self.rt_col, self.mz_col])
+        mz_num = self._numeric_series(df[self.mz_col]).round(4)
+        rt_num = self._numeric_series(df[self.rt_col]).round(4)
+        intensity_num = self._numeric_intensity_df(df)
+        intensity_positive = (intensity_num > 0).any(axis=1)
+        df = df[(mz_num > 0) & intensity_positive]
+        df = df[rt_num.notna() & mz_num.notna()]
         
         return df.reset_index(drop=True)
     
@@ -151,10 +177,63 @@ class MSDataProcessor:
                 return col
         return None
 
+    def _infer_combined_mz_rt_column(self, df):
+        """Infer combined m/z/RT column from first column values."""
+        if df is None or df.empty:
+            return None
+        first_col = df.columns[0]
+        series = df[first_col].astype(str)
+        sample = series[series.notna()].head(50)
+        if sample.empty:
+            return None
+        parts = sample.str.split("/", n=1, expand=True)
+        if parts.shape[1] < 2:
+            return None
+        left = pd.to_numeric(parts[0].str.strip(), errors="coerce")
+        right = pd.to_numeric(parts[1].str.strip(), errors="coerce")
+        valid_ratio = ((left.notna()) & (right.notna())).mean()
+        if valid_ratio >= 0.6:
+            return first_col
+        return None
+
+    def _columns_after(self, columns, col):
+        """Return columns after the specified column in original order."""
+        columns_list = list(columns)
+        if col not in columns_list:
+            return []
+        idx = columns_list.index(col)
+        return columns_list[idx + 1:]
+
+    def _drop_temp_columns(self, df):
+        """Remove derived columns from combined m/z/RT."""
+        temp_cols = getattr(self, "temp_mz_rt_cols", [])
+        if not temp_cols:
+            return df
+        cols_to_drop = [col for col in temp_cols if col in df.columns]
+        if not cols_to_drop:
+            return df
+        return df.drop(columns=cols_to_drop)
+
+    def _normalize_output_columns(self, df):
+        """Restore blank headers where pandas created 'Unnamed: x'."""
+        rename_map = {}
+        for col in df.columns:
+            if isinstance(col, str) and col.startswith("Unnamed: "):
+                rename_map[col] = ""
+        if not rename_map:
+            return df
+        return df.rename(columns=rename_map)
+
+    def _numeric_series(self, series):
+        return pd.to_numeric(series, errors="coerce")
+
+    def _numeric_intensity_df(self, df):
+        return df[self.intensity_cols].apply(pd.to_numeric, errors="coerce")
+
     def _compute_occurrence_and_sum(self, df):
-        intensities = df[self.intensity_cols].fillna(0).to_numpy(dtype=float)
+        intensities = self._numeric_intensity_df(df).to_numpy(dtype=float)
         occurrence = (intensities > 0).sum(axis=1).astype(int)
-        total_intensity = intensities.sum(axis=1)
+        total_intensity = np.nansum(intensities, axis=1)
         return occurrence, total_intensity
     
     def find_unique_signals(self, df):
@@ -175,8 +254,8 @@ class MSDataProcessor:
         if len(df) == 0:
             return df
 
-        rt_values = df[self.rt_col].to_numpy()
-        mz_values = df[self.mz_col].to_numpy()
+        rt_values = self._numeric_series(df[self.rt_col]).to_numpy(dtype=float)
+        mz_values = self._numeric_series(df[self.mz_col]).to_numpy(dtype=float)
         occurrence, total_intensity = self._compute_occurrence_and_sum(df)
 
         order = np.argsort(rt_values)
@@ -245,10 +324,15 @@ class MSDataProcessor:
         unique_count = len(df_unique)
         
         # Sort by intensity (sum across samples if multiple)
+        intensity_num = self._numeric_intensity_df(df_unique).fillna(0)
         if len(self.intensity_cols) == 1:
-            df_sorted = df_unique.sort_values(self.intensity_cols[0], ascending=False).reset_index(drop=True)
+            df_sorted = df_unique.assign(
+                _intensity_sort=intensity_num[self.intensity_cols[0]]
+            ).sort_values("_intensity_sort", ascending=False).drop(
+                columns=["_intensity_sort"]
+            ).reset_index(drop=True)
         else:
-            total_intensity = df_unique[self.intensity_cols].sum(axis=1)
+            total_intensity = intensity_num.sum(axis=1)
             df_sorted = (
                 df_unique.assign(_total_intensity=total_intensity)
                 .sort_values("_total_intensity", ascending=False)
@@ -261,6 +345,10 @@ class MSDataProcessor:
             df_result = df_sorted.head(top_n)
         else:
             df_result = df_sorted
+
+        # Remove derived m/z/RT columns before output
+        df_result = self._drop_temp_columns(df_result)
+        df_result = self._normalize_output_columns(df_result)
         
         # Statistics
         stats = {
@@ -299,11 +387,21 @@ class MSDataProcessor:
                 worksheet = writer.sheets['Top Results']
                 
                 # Format all intensity columns as scientific notation
-                for intensity_col in self.intensity_cols:
-                    intensity_col_idx = list(df.columns).index(intensity_col) + 1
-                    for row in range(2, len(df) + 2):
-                        cell = worksheet.cell(row=row, column=intensity_col_idx)
-                        cell.number_format = '0.00E+00'
+                col_positions = getattr(self, "intensity_col_positions", [])
+                if col_positions:
+                    for intensity_col_idx in col_positions:
+                        col_excel_idx = intensity_col_idx + 1
+                        for row in range(2, len(df) + 2):
+                            cell = worksheet.cell(row=row, column=col_excel_idx)
+                            cell.number_format = '0.00E+00'
+                else:
+                    for intensity_col in self.intensity_cols:
+                        if intensity_col not in df.columns:
+                            continue
+                        intensity_col_idx = list(df.columns).index(intensity_col) + 1
+                        for row in range(2, len(df) + 2):
+                            cell = worksheet.cell(row=row, column=intensity_col_idx)
+                            cell.number_format = '0.00E+00'
         else:
             raise ValueError(f"Unsupported output format. Supported: .xlsx, .xls, .csv, .tsv, .txt")
 
