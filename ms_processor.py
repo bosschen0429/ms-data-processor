@@ -5,7 +5,11 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import sys
 import os
+from copy import copy
 from datetime import datetime
+from openpyxl import load_workbook
+from openpyxl.styles import Font
+from openpyxl.utils.dataframe import dataframe_to_rows
 
 class MSDataProcessor:
     """Mass Spectrometry Data Processor"""
@@ -39,14 +43,36 @@ class MSDataProcessor:
             DataFrame with all columns
         """
         file_path = str(file_path)
-        
+        self.source_excel_path = None
+        self.source_sheet_name = None
+
         # Read file based on extension
         if file_path.endswith('.csv'):
             df = pd.read_csv(file_path, keep_default_na=False)
         elif file_path.endswith('.tsv') or file_path.endswith('.txt'):
             df = pd.read_csv(file_path, sep='\t', keep_default_na=False)
         elif file_path.endswith(('.xlsx', '.xls')):
+            # 記錄原始檔案路徑，供輸出時複製工作表使用
+            self.source_excel_path = file_path
+            wb_temp = load_workbook(file_path, data_only=False)
+            self.source_sheet_name = wb_temp.sheetnames[0]
+            ws_temp = wb_temp[self.source_sheet_name]
+
+            # 偵測 column A 中帶有紅色字型 (rgb 類型) 的資料列
+            red_font_pandas_indices = set()
+            for row_idx in range(2, ws_temp.max_row + 1):
+                cell = ws_temp.cell(row=row_idx, column=1)
+                font = cell.font
+                if font and font.color and font.color.type == 'rgb':
+                    rgb_str = str(font.color.rgb)
+                    if 'FF0000' in rgb_str.upper():
+                        # pandas DataFrame index = Excel row - 2
+                        red_font_pandas_indices.add(row_idx - 2)
+
+            wb_temp.close()
             df = pd.read_excel(file_path, keep_default_na=False)
+            # 直接在 DataFrame 中標記紅色列，讓標記跟著資料一起過濾
+            df["__is_red_font"] = df.index.isin(red_font_pandas_indices)
         else:
             raise ValueError(f"Unsupported file format. Supported: .xlsx, .xls, .csv, .tsv, .txt")
         
@@ -64,10 +90,11 @@ class MSDataProcessor:
             combined_mz_rt_col = self._infer_combined_mz_rt_column(df)
 
         # If no intensity columns matched by keywords, default to all columns after m/z/RT.
+        _internal_cols = {"__is_red_font"}
         if not intensity_cols and combined_mz_rt_col:
-            intensity_cols = self._columns_after(df.columns, combined_mz_rt_col)
+            intensity_cols = [c for c in self._columns_after(df.columns, combined_mz_rt_col) if c not in _internal_cols]
         elif not intensity_cols and rt_col and mz_col:
-            exclude = {rt_col, mz_col}
+            exclude = {rt_col, mz_col} | _internal_cols
             if id_col:
                 exclude.add(id_col)
             intensity_cols = [col for col in df.columns if col not in exclude]
@@ -133,8 +160,8 @@ class MSDataProcessor:
         rt_num = self._numeric_series(df[self.rt_col]).round(4)
         intensity_num = self._numeric_intensity_df(df)
         intensity_positive = (intensity_num > 0).any(axis=1)
-        df = df[(mz_num > 0) & intensity_positive]
-        df = df[rt_num.notna() & mz_num.notna()]
+        valid_mask = (mz_num > 0) & intensity_positive & rt_num.notna() & mz_num.notna()
+        df = df[valid_mask]
         
         return df.reset_index(drop=True)
     
@@ -318,11 +345,21 @@ class MSDataProcessor:
         # Load data
         df_original = self.load_data(file_path)
         original_count = len(df_original)
-        
-        # Remove duplicates
-        df_unique = self.find_unique_signals(df_original)
+
+        # 分離紅色標記列（不參與去重複，直接保留）
+        has_red_col = "__is_red_font" in df_original.columns
+        if has_red_col and df_original["__is_red_font"].any():
+            red_mask = df_original["__is_red_font"]
+            df_red = df_original[red_mask].copy()
+            df_normal = df_original[~red_mask].drop(columns=["__is_red_font"]).reset_index(drop=True)
+        else:
+            df_red = pd.DataFrame()
+            df_normal = df_original.drop(columns=["__is_red_font"], errors="ignore")
+
+        # Remove duplicates（僅對非紅色列進行）
+        df_unique = self.find_unique_signals(df_normal)
         unique_count = len(df_unique)
-        
+
         # Sort by intensity (sum across samples if multiple)
         intensity_num = self._numeric_intensity_df(df_unique).fillna(0)
         if len(self.intensity_cols) == 1:
@@ -339,22 +376,32 @@ class MSDataProcessor:
                 .drop(columns=["_total_intensity"])
                 .reset_index(drop=True)
             )
-        
-        # Take top N
+
+        # Take top N（僅對非紅色列計數）
         if top_n and top_n > 0:
             df_result = df_sorted.head(top_n)
         else:
             df_result = df_sorted
+
+        # 合併：紅色標記列（置頂） + 去重複結果
+        if not df_red.empty:
+            df_red = df_red.copy()
+            df_red["__is_red_font"] = True
+        df_result = df_result.copy()
+        df_result["__is_red_font"] = False
+        df_result = pd.concat([df_red, df_result], ignore_index=True)
 
         # Remove derived m/z/RT columns before output
         df_result = self._drop_temp_columns(df_result)
         df_result = self._normalize_output_columns(df_result)
         
         # Statistics
+        red_count = len(df_red)
         stats = {
             'original_count': original_count,
             'unique_count': unique_count,
             'output_count': len(df_result),
+            'red_preserved_count': red_count,
             'data_source': self.data_source,
             'sample_count': len(self.intensity_cols)
         }
@@ -373,26 +420,41 @@ class MSDataProcessor:
             Output file path
         """
         output_path = str(output_path)
-        
+
+        # 取出紅色標記資訊，然後移除暫存欄位
+        red_font_flags = []
+        if "__is_red_font" in df.columns:
+            red_font_flags = df["__is_red_font"].tolist()
+            df = df.drop(columns=["__is_red_font"])
+
         if output_path.endswith('.csv'):
             df.to_csv(output_path, index=False)
         elif output_path.endswith('.tsv') or output_path.endswith('.txt'):
             df.to_csv(output_path, sep='\t', index=False)
         elif output_path.endswith(('.xlsx', '.xls')):
-            with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-                df.to_excel(writer, sheet_name='Top Results', index=False)
-                
-                # Format intensity column as scientific notation
-                workbook = writer.book
-                worksheet = writer.sheets['Top Results']
-                
-                # Format all intensity columns as scientific notation
+            source_path = getattr(self, "source_excel_path", None)
+            sheet_name = getattr(self, "source_sheet_name", None)
+
+            if source_path and sheet_name:
+                # 完整複製原始 Excel 檔（保留所有工作表、字型、格式）
+                wb = load_workbook(source_path)
+                ws = wb[sheet_name]
+
+                # 清除該工作表原有資料
+                ws.delete_rows(1, ws.max_row)
+
+                # 寫入處理後的資料（標題 + 內容）
+                for r_idx, row in enumerate(dataframe_to_rows(df, index=False, header=True), 1):
+                    for c_idx, value in enumerate(row, 1):
+                        cell = ws.cell(row=r_idx, column=c_idx, value=value)
+
+                # 對 intensity 欄位套用科學記號格式
                 col_positions = getattr(self, "intensity_col_positions", [])
                 if col_positions:
                     for intensity_col_idx in col_positions:
                         col_excel_idx = intensity_col_idx + 1
                         for row in range(2, len(df) + 2):
-                            cell = worksheet.cell(row=row, column=col_excel_idx)
+                            cell = ws.cell(row=row, column=col_excel_idx)
                             cell.number_format = '0.00E+00'
                 else:
                     for intensity_col in self.intensity_cols:
@@ -400,8 +462,41 @@ class MSDataProcessor:
                             continue
                         intensity_col_idx = list(df.columns).index(intensity_col) + 1
                         for row in range(2, len(df) + 2):
-                            cell = worksheet.cell(row=row, column=intensity_col_idx)
+                            cell = ws.cell(row=row, column=intensity_col_idx)
                             cell.number_format = '0.00E+00'
+
+                # 對紅色標記列的 column A 套用紅色字型
+                if red_font_flags:
+                    red_font_style = Font(color="FF0000")
+                    for i, is_red in enumerate(red_font_flags):
+                        if is_red:
+                            # DataFrame row i → Excel row i+2 (row 1 = header)
+                            cell = ws.cell(row=i + 2, column=1)
+                            cell.font = red_font_style
+
+                wb.save(output_path)
+                wb.close()
+            else:
+                # 非 Excel 來源或缺少資訊，退回原有邏輯
+                with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+                    df.to_excel(writer, sheet_name='Sheet1', index=False)
+                    workbook = writer.book
+                    worksheet = writer.sheets['Sheet1']
+                    col_positions = getattr(self, "intensity_col_positions", [])
+                    if col_positions:
+                        for intensity_col_idx in col_positions:
+                            col_excel_idx = intensity_col_idx + 1
+                            for row in range(2, len(df) + 2):
+                                cell = worksheet.cell(row=row, column=col_excel_idx)
+                                cell.number_format = '0.00E+00'
+                    else:
+                        for intensity_col in self.intensity_cols:
+                            if intensity_col not in df.columns:
+                                continue
+                            intensity_col_idx = list(df.columns).index(intensity_col) + 1
+                            for row in range(2, len(df) + 2):
+                                cell = worksheet.cell(row=row, column=intensity_col_idx)
+                                cell.number_format = '0.00E+00'
         else:
             raise ValueError(f"Unsupported output format. Supported: .xlsx, .xls, .csv, .tsv, .txt")
 
@@ -852,6 +947,8 @@ class MSProcessorGUI:
             self.update_status("\n" + "="*50)
             self.update_status("Processing Complete!")
             self.update_status(f"Original data: {stats['original_count']} signals")
+            if stats.get('red_preserved_count', 0) > 0:
+                self.update_status(f"Red-font preserved (no dedup): {stats['red_preserved_count']} signals")
             self.update_status(f"After deduplication: {stats['unique_count']} signals")
             self.update_status(f"Output count: {stats['output_count']} signals")
             self.update_status(f"\nResults saved to:\n{output_path}")
