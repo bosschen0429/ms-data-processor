@@ -54,3 +54,4 @@ tmp*
 # Test data (optional, uncomment if needed)
 # test_data/
 # sample_data/
+.superpowers/
