@@ -861,10 +861,10 @@ class MSProcessorGUI:
         
         return entry_var  # Return the StringVar directly
     
-    def select_file(self):
-        """Select input file"""
-        file_path = filedialog.askopenfilename(
-            title="Select Data File",
+    def select_files(self):
+        """Select one or more input files"""
+        file_paths = filedialog.askopenfilenames(
+            title="Select Data Files",
             filetypes=[
                 ("All Supported Formats", "*.xlsx *.xls *.csv *.tsv *.txt"),
                 ("Excel files", "*.xlsx *.xls"),
@@ -873,13 +873,14 @@ class MSProcessorGUI:
                 ("All files", "*.*")
             ]
         )
-        
-        if file_path:
-            self.input_file = file_path
-            self.file_label.config(
-                text=Path(file_path).name,
-                fg=self.COLORS['text']
-            )
+        if file_paths:
+            self.input_files = list(file_paths)
+            names = [Path(p).name for p in self.input_files]
+            if len(names) == 1:
+                label_text = names[0]
+            else:
+                label_text = f"{names[0]} and {len(names) - 1} more files"
+            self.file_label.config(text=label_text, fg=self.COLORS['text'])
     
     def update_status(self, message):
         """Update status display"""
