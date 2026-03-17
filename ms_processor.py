@@ -5,6 +5,8 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import sys
 import os
+import threading
+import subprocess
 from copy import copy
 from datetime import datetime
 from openpyxl import load_workbook
@@ -515,7 +517,9 @@ class MSProcessorGUI:
         'text': '#212121',          # Dark text
         'text_secondary': '#757575', # Gray text
         'border': '#E0E0E0',        # Light border
-        'shadow': '#00000010'       # Subtle shadow
+        'shadow': '#00000010',      # Subtle shadow
+        'secondary': '#607D8B',     # Blue-grey for Open Folder button
+        'secondary_dark': '#455A64' # Darker blue-grey for hover
     }
     
     def __init__(self, root):
@@ -955,7 +959,6 @@ class MSProcessorGUI:
             
             # Show file in Finder/Explorer
             if self.is_macos:
-                import subprocess
                 subprocess.run(["open", "-R", str(output_path)])
             
             messagebox.showinfo("Success", f"Processing complete!\n\nResults saved to:\n{output_path}")
