@@ -771,7 +771,7 @@ class MSProcessorGUI:
             text="Start Processing",
             command=self.process_data,
             color_key='success',
-            padx=25,
+            width=22,
             pady=12,
             font_size=11
         )
@@ -780,10 +780,10 @@ class MSProcessorGUI:
 
         folder_btn = self._create_button(
             btn_row,
-            text="📂 Open Output Folder",
+            text="Open Output Folder",
             command=self.open_output_folder,
             color_key='secondary',
-            padx=25,
+            width=22,
             pady=12,
             font_size=11
         )
