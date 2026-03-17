@@ -887,7 +887,6 @@ class MSProcessorGUI:
         self.status_text.insert("end", message + "\n")
         self.status_text.see("end")
         self.status_text.config(state="disabled")
-        self.root.update()
     
     def process_data(self):
         """Process data"""
