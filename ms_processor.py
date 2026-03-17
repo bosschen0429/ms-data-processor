@@ -761,16 +761,20 @@ class MSProcessorGUI:
         self.top_n_var = self._create_param_row(param_grid, "Output Top N Signals:", "10", 
                                "Enter 0 for all signals")
         
-        # Process button
+        # Button row: Start Processing + Open Output Folder side by side
+        # btn_row must be created BEFORE the buttons so they can use it as parent
+        btn_row = tk.Frame(main_container, bg=self.COLORS['bg'])
+        btn_row.pack(pady=(0, 15))
+
         if self.is_macos:
             process_btn = ttk.Button(
-                main_container,
+                btn_row,
                 text="Start Processing",
                 command=self.process_data
             )
         else:
             process_btn = tk.Button(
-                main_container,
+                btn_row,
                 text="Start Processing",
                 command=self.process_data,
                 bg=self.COLORS['success'],
@@ -785,12 +789,7 @@ class MSProcessorGUI:
             process_btn.bind("<Leave>", lambda e: process_btn.config(bg=self.COLORS['success']))
 
         self.process_btn = process_btn
-
-        # Button row: Start Processing + Open Output Folder side by side
-        btn_row = tk.Frame(main_container, bg=self.COLORS['bg'])
-        btn_row.pack(pady=(0, 15))
-
-        process_btn.pack(side="left", padx=(0, 10), in_=btn_row)
+        process_btn.pack(side="left", padx=(0, 10))
 
         folder_btn = self._create_button(
             btn_row,
