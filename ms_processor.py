@@ -982,87 +982,41 @@ class MSProcessorGUI:
         self.status_text.config(state="disabled")
     
     def process_data(self):
-        """Process data"""
-        if not self.input_file:
-            messagebox.showerror("Error", "Please select an input file first!")
+        """Validate inputs and start batch processing in a background thread."""
+        if self.processing:
             return
-        
+
+        if not self.input_files:
+            messagebox.showerror("Error", "Please select one or more input files first!")
+            return
+
         try:
-            # Clear status
-            self.status_text.config(state="normal")
-            self.status_text.delete(1.0, "end")
-            self.status_text.config(state="disabled")
-            
-            # Read parameters
-            mz_tol = float(self.mz_tolerance_var.get())
-            rt_tol = float(self.rt_tolerance_var.get())
-            top_n = int(self.top_n_var.get())
-            if top_n == 0:
-                top_n = None
-            
-            self.update_status("Starting processing...")
-            self.update_status(f"Output directory: {self.output_dir}")
-            
-            # Create processor
-            processor = MSDataProcessor(mz_tolerance_ppm=mz_tol, rt_tolerance=rt_tol)
-            
-            # Process data
-            self.update_status("Loading data...")
-            df_result, stats = processor.process(self.input_file, top_n)
-            
-            # Display identified columns
-            self.update_status(f"\nData Source: {stats['data_source']}")
-            self.update_status(f"Identified Columns:")
-            self.update_status(f"  RT: {processor.rt_col}")
-            self.update_status(f"  m/z: {processor.mz_col}")
-            self.update_status(f"  Intensity columns ({len(processor.intensity_cols)}): {', '.join(processor.intensity_cols)}")
-            self.update_status(f"Samples detected: {stats['sample_count']}")
-            other_cols = len(processor.all_columns) - len(processor.intensity_cols) - 2
-            self.update_status(f"Other columns preserved: {max(other_cols, 0)}")
-            
-            # Generate output filename with timestamp
-            input_path = Path(self.input_file)
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_filename = f"processed_{input_path.stem}_{timestamp}{input_path.suffix}"
-            output_path = self.output_dir / output_filename
-            
-            # Ensure output directory exists and is writable
-            try:
-                self.output_dir.mkdir(parents=True, exist_ok=True)
-            except Exception as mkdir_error:
-                self.update_status(f"\nWarning: Could not create output directory: {mkdir_error}")
-                # Fallback to Desktop
-                desktop = Path.home() / "Desktop" / "MS_Data_Output"
-                desktop.mkdir(parents=True, exist_ok=True)
-                output_path = desktop / output_filename
-                self.update_status(f"Using alternative location: {desktop}")
-            
-            # Save results
-            self.update_status("\nSaving results...")
-            processor.save_results(df_result, str(output_path))
-            
-            # Display statistics
-            self.update_status("\n" + "="*50)
-            self.update_status("Processing Complete!")
-            self.update_status(f"Original data: {stats['original_count']} signals")
-            if stats.get('red_preserved_count', 0) > 0:
-                self.update_status(f"Red-font preserved (no dedup): {stats['red_preserved_count']} signals")
-            self.update_status(f"After deduplication: {stats['unique_count']} signals")
-            self.update_status(f"Output count: {stats['output_count']} signals")
-            self.update_status(f"\nResults saved to:\n{output_path}")
-            
-            # Show file in Finder/Explorer
-            if self.is_macos:
-                subprocess.run(["open", "-R", str(output_path)])
-            
-            messagebox.showinfo("Success", f"Processing complete!\n\nResults saved to:\n{output_path}")
-            
-        except Exception as e:
-            import traceback
-            error_details = traceback.format_exc()
-            messagebox.showerror("Error", f"An error occurred during processing:\n{str(e)}")
-            self.update_status(f"\nError: {str(e)}")
-            self.update_status(f"\nDetails:\n{error_details}")
+            mz_tol  = float(self.mz_tolerance_var.get())
+            rt_tol  = float(self.rt_tolerance_var.get())
+            top_n_v = int(self.top_n_var.get())
+            top_n   = top_n_v if top_n_v > 0 else None
+        except ValueError:
+            messagebox.showerror("Error", "Invalid parameter value. Please enter numbers only.")
+            return
+
+        # Clear status area
+        self.status_text.config(state="normal")
+        self.status_text.delete(1.0, "end")
+        self.status_text.config(state="disabled")
+
+        self.update_status(f"輸出資料夾：{self.output_dir}")
+        self.update_status(f"共 {len(self.input_files)} 個檔案，開始批量處理...\n")
+
+        self.processing = True
+        if self.process_btn:
+            self.process_btn.config(state="disabled")
+
+        t = threading.Thread(
+            target=self._batch_worker,
+            args=(list(self.input_files), mz_tol, rt_tol, top_n),
+            daemon=True
+        )
+        t.start()
 
 
 def main():
