@@ -25,6 +25,7 @@ spec = importlib.util.spec_from_file_location(
     pathlib.Path(__file__).parent.parent / "ms_processor.py"
 )
 mod = importlib.util.module_from_spec(spec)
+sys.modules['ms_processor'] = mod   # required so patch('ms_processor.X') resolves correctly
 spec.loader.exec_module(mod)
 MSProcessorGUI = mod.MSProcessorGUI
 
@@ -113,6 +114,85 @@ class TestOpenOutputFolder(unittest.TestCase):
             gui.open_output_folder()
         mock_err.assert_called_once()
         mock_start.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Task 7: _batch_worker
+# ---------------------------------------------------------------------------
+from pathlib import Path as _Path
+
+
+class TestBatchWorker(unittest.TestCase):
+    def _make_gui(self):
+        gui = object.__new__(MSProcessorGUI)
+        gui.root = MagicMock()
+        # Use a real Path-like so / operator works correctly
+        gui.output_dir = _Path('/out')
+        gui.update_status = MagicMock()
+        gui.process_btn = None
+        gui.processing = False
+        return gui
+
+    def test_success_appends_to_results(self):
+        gui = self._make_gui()
+        fake_stats = {
+            'original_count': 100, 'unique_count': 50, 'output_count': 30,
+            'red_preserved_count': 0, 'data_source': 'MZmine', 'sample_count': 3
+        }
+        fake_df = MagicMock()
+        results_captured = []
+
+        gui.root.after = lambda delay, fn, *args: fn(*args)
+
+        with patch('ms_processor.MSDataProcessor') as MockProc:
+            instance = MockProc.return_value
+            instance.process.return_value = (fake_df, fake_stats)
+            instance.save_results.return_value = None
+            gui._batch_worker(['/data/file_A.xlsx'], 20, 1.0, 10)
+
+        # _on_batch_complete was called synchronously via root.after mock
+        # We verify update_status was called (summary rendered)
+        self.assertTrue(gui.update_status.called)
+
+    def test_error_is_captured_not_raised(self):
+        """Processing error must be captured in results, not propagate as exception."""
+        gui = self._make_gui()
+        results_captured = []
+
+        def fake_after(delay, fn, *args):
+            if getattr(fn, '__name__', None) == '_on_batch_complete':
+                results_captured.extend(args[0])
+            else:
+                fn(*args)
+
+        gui.root.after = fake_after
+
+        with patch('ms_processor.MSDataProcessor') as MockProc:
+            MockProc.return_value.process.side_effect = ValueError("bad columns")
+            gui._batch_worker(['/data/bad.xlsx'], 20, 1.0, 10)
+
+        self.assertEqual(len(results_captured), 1)
+        status, path, err_msg = results_captured[0]
+        self.assertEqual(status, 'error')
+        self.assertIn('bad columns', err_msg)
+
+    def test_new_processor_created_per_file(self):
+        """Each file must get a fresh MSDataProcessor instance."""
+        gui = self._make_gui()
+        fake_stats = {
+            'original_count': 10, 'unique_count': 5, 'output_count': 5,
+            'red_preserved_count': 0, 'data_source': 'X', 'sample_count': 1
+        }
+        gui.root.after = lambda delay, fn, *args: fn(*args)
+
+        with patch('ms_processor.MSDataProcessor') as MockProc:
+            MockProc.return_value.process.return_value = (MagicMock(), fake_stats)
+            MockProc.return_value.save_results.return_value = None
+            gui._batch_worker(
+                ['/data/a.xlsx', '/data/b.xlsx', '/data/c.xlsx'],
+                20, 1.0, None
+            )
+        self.assertEqual(MockProc.call_count, 3)
 
 
 if __name__ == '__main__':

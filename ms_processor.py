@@ -875,6 +875,69 @@ class MSProcessorGUI:
         
         return entry_var  # Return the StringVar directly
     
+    def _batch_worker(self, files, mz_tol, rt_tol, top_n):
+        """Run in background thread. Processes each file sequentially."""
+        results = []
+        total = len(files)
+        for idx, file_path in enumerate(files, 1):
+            name = Path(file_path).name
+            self.root.after(
+                0, self.update_status,
+                f"\n[{idx}/{total}] 處理中: {name}"
+            )
+            try:
+                processor = MSDataProcessor(
+                    mz_tolerance_ppm=mz_tol,
+                    rt_tolerance=rt_tol
+                )
+                df_result, stats = processor.process(file_path, top_n)
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                output_path = (
+                    self.output_dir
+                    / f"processed_{Path(file_path).stem}_{timestamp}{Path(file_path).suffix}"
+                )
+                processor.save_results(df_result, str(output_path))
+                results.append(('success', file_path, stats, output_path))
+                red = stats.get('red_preserved_count', 0)
+                msg = (
+                    f"  ✔ {name} → "
+                    f"{stats['original_count']} → {stats['output_count']} signals"
+                    + (f" (含 {red} 紅色保留列)" if red > 0 else "")
+                )
+                self.root.after(0, self.update_status, msg)
+            except Exception as e:
+                results.append(('error', file_path, str(e)))
+                self.root.after(0, self.update_status, f"  ✗ {name} → 失敗: {e}")
+
+        self.root.after(0, self._on_batch_complete, results)
+
+    def _on_batch_complete(self, results):
+        """Called on main thread when batch finishes. Updates UI and re-enables button."""
+        self.processing = False
+        if self.process_btn:
+            self.process_btn.config(state="normal")
+
+        total = len(results)
+        success = [r for r in results if r[0] == 'success']
+        errors  = [r for r in results if r[0] == 'error']
+
+        self.update_status("\n" + "=" * 50)
+        self.update_status(f"批量處理完成！共 {total} 個檔案")
+        for r in success:
+            _, path, stats, _ = r
+            red = stats.get('red_preserved_count', 0)
+            line = (
+                f"✔ {Path(path).name} → "
+                f"{stats['original_count']} → {stats['output_count']} signals"
+                + (f" (含 {red} 紅色保留列)" if red > 0 else "")
+            )
+            self.update_status(line)
+        for r in errors:
+            _, path, err = r
+            self.update_status(f"✗ {Path(path).name} → 失敗: {err}")
+        self.update_status(f"輸出資料夾：{self.output_dir}")
+        self.update_status("=" * 50)
+
     def open_output_folder(self):
         """Open the output folder in the system file explorer"""
         if not self.output_dir.exists():
