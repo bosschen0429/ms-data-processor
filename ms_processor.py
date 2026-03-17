@@ -762,32 +762,19 @@ class MSProcessorGUI:
                                "Enter 0 for all signals")
         
         # Button row: Start Processing + Open Output Folder side by side
-        # btn_row must be created BEFORE the buttons so they can use it as parent
+        # Both buttons use _create_button for consistent sizing
         btn_row = tk.Frame(main_container, bg=self.COLORS['bg'])
         btn_row.pack(pady=(0, 15))
 
-        if self.is_macos:
-            process_btn = ttk.Button(
-                btn_row,
-                text="Start Processing",
-                command=self.process_data
-            )
-        else:
-            process_btn = tk.Button(
-                btn_row,
-                text="Start Processing",
-                command=self.process_data,
-                bg=self.COLORS['success'],
-                fg="white",
-                font=("Segoe UI", 12, "bold"),
-                relief="flat",
-                cursor="hand2",
-                padx=30,
-                pady=15
-            )
-            process_btn.bind("<Enter>", lambda e: process_btn.config(bg=self.COLORS['success_dark']))
-            process_btn.bind("<Leave>", lambda e: process_btn.config(bg=self.COLORS['success']))
-
+        process_btn = self._create_button(
+            btn_row,
+            text="Start Processing",
+            command=self.process_data,
+            color_key='success',
+            padx=25,
+            pady=12,
+            font_size=11
+        )
         self.process_btn = process_btn
         process_btn.pack(side="left", padx=(0, 10))
 
@@ -795,7 +782,10 @@ class MSProcessorGUI:
             btn_row,
             text="📂 Open Output Folder",
             command=self.open_output_folder,
-            color_key='secondary'
+            color_key='secondary',
+            padx=25,
+            pady=12,
+            font_size=11
         )
         folder_btn.pack(side="left")
         
