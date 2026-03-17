@@ -875,6 +875,21 @@ class MSProcessorGUI:
         
         return entry_var  # Return the StringVar directly
     
+    def open_output_folder(self):
+        """Open the output folder in the system file explorer"""
+        if not self.output_dir.exists():
+            messagebox.showerror(
+                "Error",
+                f"Output folder not found:\n{self.output_dir}"
+            )
+            return
+        if sys.platform == 'win32':
+            os.startfile(str(self.output_dir))
+        elif sys.platform == 'darwin':
+            subprocess.run(['open', str(self.output_dir)])
+        else:
+            subprocess.run(['xdg-open', str(self.output_dir)])
+
     def select_files(self):
         """Select one or more input files"""
         file_paths = filedialog.askopenfilenames(

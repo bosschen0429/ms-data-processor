@@ -86,5 +86,34 @@ class TestSelectFiles(unittest.TestCase):
         self.assertEqual(gui.input_files, [])
 
 
+# ---------------------------------------------------------------------------
+# Task 6: open_output_folder
+# ---------------------------------------------------------------------------
+class TestOpenOutputFolder(unittest.TestCase):
+    def _make_gui(self, exists=True):
+        gui = object.__new__(MSProcessorGUI)
+        gui.root = MagicMock()
+        p = MagicMock()
+        p.exists.return_value = exists
+        p.__str__ = MagicMock(return_value='/output/folder')
+        gui.output_dir = p
+        return gui
+
+    def test_opens_folder_on_windows(self):
+        gui = self._make_gui(exists=True)
+        with patch('sys.platform', 'win32'), \
+             patch('os.startfile') as mock_start:
+            gui.open_output_folder()
+        mock_start.assert_called_once_with('/output/folder')
+
+    def test_shows_error_if_folder_missing(self):
+        gui = self._make_gui(exists=False)
+        with patch('tkinter.messagebox.showerror') as mock_err, \
+             patch('os.startfile') as mock_start:
+            gui.open_output_folder()
+        mock_err.assert_called_once()
+        mock_start.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()
