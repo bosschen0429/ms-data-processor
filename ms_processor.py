@@ -684,7 +684,7 @@ class MSProcessorGUI:
         
         tk.Label(
             file_inner,
-            text="1. Select Input File",
+            text="1. Select Input Files",
             font=("Segoe UI", 11, "bold"),
             bg=self.COLORS['card'],
             fg=self.COLORS['text']
@@ -710,13 +710,13 @@ class MSProcessorGUI:
             select_btn = ttk.Button(
                 file_row,
                 text="Browse Files",
-                command=self.select_file
+                command=self.select_files
             )
         else:
             select_btn = tk.Button(
                 file_row,
                 text="Browse Files",
-                command=self.select_file,
+                command=self.select_files,
                 bg=self.COLORS['primary'],
                 fg="white",
                 font=("Segoe UI", 10, "bold"),
@@ -783,8 +783,22 @@ class MSProcessorGUI:
             )
             process_btn.bind("<Enter>", lambda e: process_btn.config(bg=self.COLORS['success_dark']))
             process_btn.bind("<Leave>", lambda e: process_btn.config(bg=self.COLORS['success']))
-        
-        process_btn.pack(pady=(0, 15))
+
+        self.process_btn = process_btn
+
+        # Button row: Start Processing + Open Output Folder side by side
+        btn_row = tk.Frame(main_container, bg=self.COLORS['bg'])
+        btn_row.pack(pady=(0, 15))
+
+        process_btn.pack(side="left", padx=(0, 10), in_=btn_row)
+
+        folder_btn = self._create_button(
+            btn_row,
+            text="📂 Open Output Folder",
+            command=self.open_output_folder,
+            color_key='secondary'
+        )
+        folder_btn.pack(side="left")
         
         # Status card
         status_card = self.create_card(main_container)
