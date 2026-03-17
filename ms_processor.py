@@ -545,8 +545,10 @@ class MSProcessorGUI:
         self.root.resizable(False, False)
         
         self.processor = None
-        self.input_file = None
-        self.param_entries = []  # Initialize before create_widgets
+        self.input_files = []       # List of selected file paths (replaces input_file)
+        self.processing = False     # Guard: prevents re-clicking Start Processing mid-batch
+        self.process_btn = None     # Set in create_widgets; kept here for reference
+        self.param_entries = []     # Initialize before create_widgets
         
         # Get the directory where the executable is located
         if getattr(sys, 'frozen', False):
