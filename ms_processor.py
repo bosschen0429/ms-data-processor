@@ -16,19 +16,25 @@ from openpyxl.utils.dataframe import dataframe_to_rows
 class MSDataProcessor:
     """Mass Spectrometry Data Processor"""
     
-    def __init__(self, mz_tolerance_ppm=20, rt_tolerance=1):
+    def __init__(self, mz_tolerance_ppm=5, rt_tolerance=0.5, product_mz_tolerance_ppm=20):
         """
         Initialize processor
-        
+
         Parameters:
         -----------
         mz_tolerance_ppm : float
-            m/z tolerance (ppm)
+            Precursor Ion m/z tolerance (ppm). MS1 Orbitrap accuracy, default 5 ppm.
         rt_tolerance : float
-            RT tolerance
+            Retention time tolerance (min).
+        product_mz_tolerance_ppm : float
+            Product Ion m/z tolerance (ppm). MS2 resolution is lower than MS1,
+            so a looser tolerance (default 20 ppm) is appropriate.
         """
         self.mz_tolerance = mz_tolerance_ppm / 1_000_000
         self.rt_tolerance = rt_tolerance
+        self.product_mz_tolerance = product_mz_tolerance_ppm / 1_000_000
+        self.ms1_scan_col = None
+        self.product_mz_col = None
         
     def load_data(self, file_path):
         """
@@ -136,7 +142,11 @@ class MSDataProcessor:
             self.intensity_col_positions = [
                 i for i, col in enumerate(columns_list) if col in self.intensity_cols
             ]
-            
+
+            # FeatureHunter 專用欄位（找不到時為 None，不影響非 FeatureHunter 資料）
+            self.ms1_scan_col = self._find_column(df.columns, ['ms1 scan'])
+            self.product_mz_col = self._find_column(df.columns, ['product ion m/z'])
+
             # ??? ID ???????? MZmine??????
             if id_col and has_mzmine:
                 mz_num = self._numeric_series(df[self.mz_col]).round(4)
@@ -267,31 +277,40 @@ class MSDataProcessor:
     
     def find_unique_signals(self, df):
         """
-        Find unique signals (remove duplicates), keep all other columns
-        ????????????????????O(n?) ?????
-        
-        Parameters:
-        -----------
-        df : pd.DataFrame
-            Original data
-            
-        Returns:
-        --------
-        pd.DataFrame
-            De-duplicated data
+        Find unique signals (remove duplicates), keep all other columns.
+        Two-stage deduplication:
+          Stage 1 (FeatureHunter only): same MS1 Scan Number + same Precursor m/z
+                                        → definite same trigger event, keep strongest.
+          Stage 2: RT + Precursor m/z within tolerance; if Product Ion m/z is
+                   available, both m/z dimensions must match to confirm duplicate.
         """
         if len(df) == 0:
             return df
 
+        ms1_col = getattr(self, 'ms1_scan_col', None)
+        prod_mz_col = getattr(self, 'product_mz_col', None)
+
+        # ------ Stage 1: 同 MS1 事件精確去重 ------
+        if ms1_col and ms1_col in df.columns:
+            df = self._dedup_same_ms1_event(df)
+            if len(df) == 0:
+                return df
+
+        # ------ Stage 2: 跨掃描同化合物去重 ------
         rt_values = self._numeric_series(df[self.rt_col]).to_numpy(dtype=float)
         mz_values = self._numeric_series(df[self.mz_col]).to_numpy(dtype=float)
         occurrence, total_intensity = self._compute_occurrence_and_sum(df)
+
+        prod_mz_values = None
+        if prod_mz_col and prod_mz_col in df.columns:
+            prod_mz_values = self._numeric_series(df[prod_mz_col]).to_numpy(dtype=float)
 
         order = np.argsort(rt_values)
         rt_sorted = rt_values[order]
         mz_sorted = mz_values[order]
         occ_sorted = occurrence[order]
         sum_sorted = total_intensity[order]
+        prod_mz_sorted = prod_mz_values[order] if prod_mz_values is not None else None
 
         keep_mask = np.ones(len(df), dtype=bool)
         n = len(df)
@@ -316,6 +335,17 @@ class MSDataProcessor:
                 if reference_mz > 0:
                     mz_diff_ratio = abs(mz_j - mz_i) / reference_mz
                     if mz_diff_ratio <= self.mz_tolerance:
+                        # 若有 Product Ion m/z，兩筆皆有效時須同時匹配才視為重複
+                        # Product Ion 使用獨立容差（MS2 解析度較低，預設 20 ppm）
+                        if prod_mz_sorted is not None:
+                            prod_i = prod_mz_sorted[i]
+                            prod_j = prod_mz_sorted[j]
+                            if not (np.isnan(prod_i) or np.isnan(prod_j)):
+                                ref_prod = max(prod_i, prod_j)
+                                if ref_prod > 0 and abs(prod_i - prod_j) / ref_prod > self.product_mz_tolerance:
+                                    j += 1
+                                    continue  # Product Ion m/z 不匹配 → 非重複訊號
+
                         occ_j = occ_sorted[j]
                         sum_j = sum_sorted[j]
                         if (occ_j > occ_i) or (occ_j == occ_i and sum_j > sum_i):
@@ -327,18 +357,59 @@ class MSDataProcessor:
 
         kept_indices = order[keep_mask]
         return df.iloc[kept_indices].reset_index(drop=True)
+
+    def _dedup_same_ms1_event(self, df):
+        """Stage 1: 同 MS1 Scan Number + 相同 Precursor Ion m/z（ppm 容差內）
+        代表同一觸發事件被重複記錄，保留 total intensity 最高的那筆。"""
+        ms1_values = pd.to_numeric(df[self.ms1_scan_col], errors='coerce').to_numpy(dtype=float)
+        mz_values = self._numeric_series(df[self.mz_col]).to_numpy(dtype=float)
+        _, total_intensity = self._compute_occurrence_and_sum(df)
+
+        n = len(df)
+        keep_mask = np.ones(n, dtype=bool)
+
+        for ms1_val in np.unique(ms1_values[~np.isnan(ms1_values)]):
+            group_idx = np.where(ms1_values == ms1_val)[0]
+            if len(group_idx) <= 1:
+                continue
+
+            group_mz = mz_values[group_idx]
+            group_int = total_intensity[group_idx]
+            local_keep = np.ones(len(group_idx), dtype=bool)
+
+            for ii in range(len(group_idx)):
+                if not local_keep[ii]:
+                    continue
+                for jj in range(ii + 1, len(group_idx)):
+                    if not local_keep[jj]:
+                        continue
+                    ref_mz = max(group_mz[ii], group_mz[jj])
+                    if ref_mz > 0:
+                        diff_ratio = abs(group_mz[ii] - group_mz[jj]) / ref_mz
+                        if diff_ratio <= self.mz_tolerance:
+                            if group_int[jj] > group_int[ii]:
+                                local_keep[ii] = False
+                                break
+                            else:
+                                local_keep[jj] = False
+
+            for ii, keep in enumerate(local_keep):
+                if not keep:
+                    keep_mask[group_idx[ii]] = False
+
+        return df[keep_mask].reset_index(drop=True)
     
     def process(self, file_path, top_n=None):
         """
         Complete processing workflow
-        
+
         Parameters:
         -----------
         file_path : str
             Input file path
         top_n : int, optional
-            Output top N signals, None means output all
-            
+            Output top N signals by intensity. None or 0 means output all.
+
         Returns:
         --------
         tuple
@@ -379,7 +450,6 @@ class MSDataProcessor:
                 .reset_index(drop=True)
             )
 
-        # Take top N（僅對非紅色列計數）
         if top_n and top_n > 0:
             df_result = df_sorted.head(top_n)
         else:
@@ -749,18 +819,22 @@ class MSProcessorGUI:
         param_grid = tk.Frame(param_inner, bg=self.COLORS['card'])
         param_grid.pack(fill="x")
         
-        # m/z tolerance
-        self.mz_tolerance_var = self._create_param_row(param_grid, "m/z Tolerance (ppm):", "20", 
-                               "Acceptable mass difference")
-        
+        # Precursor m/z tolerance
+        self.mz_tolerance_var = self._create_param_row(param_grid, "Precursor m/z Tolerance (ppm):", "5",
+                               "MS1 Orbitrap accuracy (e.g. 5 ppm)")
+
+        # Product Ion m/z tolerance
+        self.product_mz_tolerance_var = self._create_param_row(param_grid, "Product Ion Tolerance (ppm):", "20",
+                               "MS2 resolution is lower; 20 ppm recommended")
+
         # RT tolerance
-        self.rt_tolerance_var = self._create_param_row(param_grid, "RT Tolerance:", "1", 
-                               "Acceptable retention time difference")
+        self.rt_tolerance_var = self._create_param_row(param_grid, "RT Tolerance:", "0.5",
+                               "Acceptable retention time difference (min)")
         
         # Top N
-        self.top_n_var = self._create_param_row(param_grid, "Output Top N Signals:", "10", 
-                               "Enter 0 for all signals")
-        
+        self.top_n_var = self._create_param_row(param_grid, "Output Top N Signals:", "0",
+                               "0 = output all signals")
+
         # Button row: Start Processing + Open Output Folder side by side
         # Both buttons use _create_button for consistent sizing
         btn_row = tk.Frame(main_container, bg=self.COLORS['bg'])
@@ -864,7 +938,7 @@ class MSProcessorGUI:
         
         return entry_var  # Return the StringVar directly
     
-    def _batch_worker(self, files, mz_tol, rt_tol, top_n):
+    def _batch_worker(self, files, mz_tol, prod_mz_tol, rt_tol, top_n):
         """Run in background thread. Processes each file sequentially."""
         results = []
         total = len(files)
@@ -877,7 +951,8 @@ class MSProcessorGUI:
             try:
                 processor = MSDataProcessor(
                     mz_tolerance_ppm=mz_tol,
-                    rt_tolerance=rt_tol
+                    rt_tolerance=rt_tol,
+                    product_mz_tolerance_ppm=prod_mz_tol
                 )
                 df_result, stats = processor.process(file_path, top_n)
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -980,10 +1055,11 @@ class MSProcessorGUI:
             return
 
         try:
-            mz_tol  = float(self.mz_tolerance_var.get())
-            rt_tol  = float(self.rt_tolerance_var.get())
-            top_n_v = int(self.top_n_var.get())
-            top_n   = top_n_v if top_n_v > 0 else None
+            mz_tol      = float(self.mz_tolerance_var.get())
+            prod_mz_tol = float(self.product_mz_tolerance_var.get())
+            rt_tol      = float(self.rt_tolerance_var.get())
+            top_n_v     = int(self.top_n_var.get())
+            top_n       = top_n_v if top_n_v > 0 else None
         except ValueError:
             messagebox.showerror("Error", "Invalid parameter value. Please enter numbers only.")
             return
@@ -1002,17 +1078,98 @@ class MSProcessorGUI:
 
         t = threading.Thread(
             target=self._batch_worker,
-            args=(list(self.input_files), mz_tol, rt_tol, top_n),
+            args=(list(self.input_files), mz_tol, prod_mz_tol, rt_tol, top_n),
             daemon=True
         )
         t.start()
 
 
+def _run_cli(args):
+    """CLI mode: process files without GUI."""
+    import argparse
+    from pathlib import Path
+
+    files = args.files
+    output_dir = Path(args.output) if args.output else None
+    top_n = args.top_n if args.top_n and args.top_n > 0 else None
+
+    total = len(files)
+    success = 0
+    for i, file_path in enumerate(files, 1):
+        p = Path(file_path)
+        out_dir = output_dir or p.parent
+        out_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_path = out_dir / f"processed_{p.stem}_{timestamp}{p.suffix}"
+
+        print(f"[{i}/{total}] {p.name}")
+        try:
+            processor = MSDataProcessor(
+                mz_tolerance_ppm=args.mz_tol,
+                product_mz_tolerance_ppm=args.product_mz_tol,
+                rt_tolerance=args.rt_tol,
+            )
+            df_result, stats = processor.process(file_path, top_n)
+            processor.save_results(df_result, str(output_path))
+            red = stats.get('red_preserved_count', 0)
+            print(
+                f"  {stats['original_count']} → {stats['output_count']} signals"
+                + (f"  ({red} red-font rows preserved)" if red else "")
+            )
+            print(f"  → {output_path}")
+            success += 1
+        except Exception as e:
+            print(f"  ERROR: {e}")
+
+    print(f"\nDone: {success}/{total} files processed.")
+
+
 def main():
-    """Main program"""
-    root = tk.Tk()
-    app = MSProcessorGUI(root)
-    root.mainloop()
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="ms_processor",
+        description="MS Data Processor – remove duplicate signals from FeatureHunter / MZmine output.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "files", nargs="*",
+        help="Input files (.tsv / .csv / .xlsx). If omitted, launch GUI.",
+    )
+    parser.add_argument(
+        "--mz-tol", type=float, default=5.0, dest="mz_tol",
+        metavar="PPM",
+        help="Precursor Ion m/z tolerance (ppm). MS1 Orbitrap accuracy.",
+    )
+    parser.add_argument(
+        "--product-mz-tol", type=float, default=20.0, dest="product_mz_tol",
+        metavar="PPM",
+        help="Product Ion m/z tolerance (ppm). MS2 runs at lower resolution.",
+    )
+    parser.add_argument(
+        "--rt-tol", type=float, default=0.5, dest="rt_tol",
+        metavar="MIN",
+        help="Retention time tolerance (min).",
+    )
+    parser.add_argument(
+        "--top-n", type=int, default=0, dest="top_n",
+        metavar="N",
+        help="Keep only top N signals by intensity. 0 = output all.",
+    )
+    parser.add_argument(
+        "-o", "--output", default=None, dest="output",
+        metavar="DIR",
+        help="Output directory. Defaults to same directory as each input file.",
+    )
+
+    args = parser.parse_args()
+
+    if args.files:
+        _run_cli(args)
+    else:
+        root = tk.Tk()
+        app = MSProcessorGUI(root)
+        root.mainloop()
 
 
 if __name__ == "__main__":
